@@ -66,13 +66,13 @@ main{padding:22px 18px 100px;max-width:1080px;margin:0 auto;width:100%}
 .tache{display:grid;grid-template-columns:10px 1fr auto;gap:4px 14px;align-items:center;width:100%;text-align:left;padding:14px 18px;border-top:1px solid var(--ligne)}
 .tache:first-child{border-top:0}
 .tache:hover{background:#FAFAFC}
-.tache-progression,.tache-echeance{grid-column:2/4}
+.tache .tache-progression,.tache .tache-echeance{grid-column:2/4}
 .tache-progression{display:flex;align-items:center;gap:10px}.tache-progression .barre{flex:1}
 .tache-progression small{width:36px;text-align:right}
 .tache-echeance{font-size:13px;color:var(--discret)}.tache-echeance.retard{color:var(--danger);font-weight:600}
 .tache b.tronque{white-space:normal;overflow:visible}
 /* mise en page selon la largeur du panneau (et non de l'écran) */
-@container (min-width:620px){.tache b.tronque{white-space:nowrap;overflow:hidden}.tache{grid-template-columns:10px minmax(0,1fr) 110px 170px 80px}.tache-progression,.tache-echeance{grid-column:auto}.tache-echeance{text-align:right}}
+@container (min-width:620px){.tache b.tronque{white-space:nowrap;overflow:hidden}.tache{grid-template-columns:10px minmax(0,1fr) 110px 170px 80px}.tache .tache-progression,.tache .tache-echeance{grid-column:auto}.tache-echeance{text-align:right}}
 .cartes{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
 .pole{background:#fff;border:1px solid var(--ligne);border-top:4px solid var(--couleur);border-radius:16px;padding:20px;text-align:left;display:grid;gap:10px;align-content:start}
 button.pole:hover{box-shadow:0 8px 24px rgba(20,22,42,.08)}
@@ -123,8 +123,8 @@ input[type=checkbox],input[type=radio]{width:auto}
 .carte[draggable=true]{cursor:grab}.carte.glisse{opacity:.4}
 .carte-titre{text-align:left;font-weight:600;padding:0}
 .carte-titre::after{content:'';position:absolute;inset:0}
-.carte-pied{display:flex;justify-content:space-between;align-items:center;gap:8px}
-.carte-pied .tache-echeance{text-align:left}
+.carte-pied{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px 8px}
+.carte-pied .tache-echeance{text-align:left;white-space:nowrap}
 .carte-pied-droite{display:flex;align-items:center;gap:6px;position:relative;z-index:1}
 .deplacer{width:28px;height:28px;border-radius:50%;border:1px solid var(--ligne);display:grid;place-items:center;font-size:18px;line-height:1;position:relative;z-index:1}
 .deplacer:hover:not(:disabled){background:var(--encre);color:#fff;border-color:var(--encre)}
