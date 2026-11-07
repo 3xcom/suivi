@@ -34,8 +34,18 @@ const PRIORITES = {
 const ROLES = {
   admin: 'Administrateur',
   responsable: 'Responsable de pôle',
-  membre: 'Membre'
+  membre: 'Membre',
+  client: 'Client'
 };
+const STATUTS_DEMANDE = {
+  nouvelle: 'Reçue',
+  en_etude: 'En étude',
+  acceptee: 'Acceptée',
+  en_cours: 'En cours',
+  terminee: 'Terminée',
+  refusee: 'Refusée'
+};
+const SUIVI_DEMANDE = ['acceptee', 'en_cours', 'terminee'];
 const COULEURS = ['#8E1F45', '#2C5AA0', '#2C7A63', '#B7791F', '#6A3FA0', '#1F2937'];
 const ICONES = {
   accueil: '<rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>',
@@ -44,6 +54,7 @@ const ICONES = {
   equipe: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.6 3.2-5.5 6.5-5.5s5.9 1.9 6.5 5.5M16 4.5a3.5 3.5 0 010 7M18 14.8c2 .6 3.3 2.3 3.6 5"/>'
 };
 ICONES.tableau = '<rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="13" rx="1"/>';
+ICONES.demandes = '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/>';
 ICONES.agenda = '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>';
 const icone = nom => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONES[nom]}</svg>`;
 const formatIso = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -93,12 +104,19 @@ const ETAT = {
   taches: [],
   assignations: [],
   sousTaches: [],
+  clients: [],
+  membresClient: [],
+  demandes: [],
+  ongletEquipe: 'comptes',
   vue: 'accueil',
   filtres: {
     pole: '',
     qui: '',
     statut: '',
-    miennes: false
+    miennes: false,
+    demandePole: '',
+    demandeStatut: '',
+    demandeClient: ''
   },
   mode: 'connexion',
   abonne: false,
@@ -127,6 +145,16 @@ const resumeSousTaches = tache => {
   return liste.length ? `${liste.filter(sousTache => sousTache.terminee).length}/${liste.length} sous-tâches` : '';
 };
 const peutModifier = tache => peutGerer(tache.pole_id) || estAssigne(tache, ETAT.moi.id);
+const estClient = () => ETAT.moi.role === 'client';
+const gereDemandes = () => ['admin', 'responsable'].includes(ETAT.moi.role);
+const estPersonnelCompte = utilisateur => utilisateur.role !== 'client';
+const clientDe = id => ETAT.clients.find(client => client.id === id);
+const groupesDe = idUtilisateur => ETAT.membresClient.filter(lien => lien.utilisateur_id === idUtilisateur).map(lien => clientDe(lien.client_id)).filter(Boolean);
+const polesOuverts = () => ETAT.poles.filter(pole => pole.accepte_demandes !== false);
+const bandeauDemandes = () => {
+  const nombre = gereDemandes() ? ETAT.demandes.filter(demande => demande.statut === 'nouvelle').length : 0;
+  return nombre ? `<button class="bandeau" data-action="navigation" data-vue="demandes"><b>${nombre}</b> nouvelle${nombre > 1 ? 's' : ''} demande${nombre > 1 ? 's' : ''} à traiter<span aria-hidden="true">›</span></button>` : '';
+};
 const polesGeres = () => ETAT.poles.filter(pole => peutGerer(pole.id));
 const parEcheance = (premiere, seconde) => (premiere.statut === 'terminee') - (seconde.statut === 'terminee') || (premiere.echeance || '9').localeCompare(seconde.echeance || '9');
 const moyenne = taches => taches.length ? Math.round(taches.reduce((somme, tache) => somme + tache.progression, 0) / taches.length) : 0;
@@ -176,7 +204,7 @@ async function demarrerSession(session) {
       minuteur = setTimeout(recharger, 400);
     };
     let canal = bdd.channel('suivi');
-    ['taches', 'assignations', 'sous_taches'].forEach(table => {
+    ['taches', 'assignations', 'sous_taches', 'demandes', 'clients', 'membres_client'].forEach(table => {
       canal = canal.on('postgres_changes', { event: '*', schema: 'public', table }, surChangement);
     });
     canal.subscribe();
@@ -184,13 +212,16 @@ async function demarrerSession(session) {
   afficher();
 }
 async function chargerTout() {
-  const [resProfils, resPoles, resLiens, resTaches, resAssignations, resSousTaches] = await Promise.all([bdd.from('profils').select('*').order('nom_complet'), bdd.from('poles').select('*').order('nom'), bdd.from('membres_pole').select('*'), bdd.from('taches').select('*'), bdd.from('assignations').select('*'), bdd.from('sous_taches').select('*').order('position')]);
+  const [resProfils, resPoles, resLiens, resTaches, resAssignations, resSousTaches, resClients, resMembresClient, resDemandes] = await Promise.all([bdd.from('profils').select('*').order('nom_complet'), bdd.from('poles').select('*').order('nom'), bdd.from('membres_pole').select('*'), bdd.from('taches').select('*'), bdd.from('assignations').select('*'), bdd.from('sous_taches').select('*').order('position'), bdd.from('clients').select('*').order('nom'), bdd.from('membres_client').select('*'), bdd.from('demandes').select('*').order('cree_le', { ascending: false })]);
   ETAT.profils = resProfils.data || [];
   ETAT.poles = resPoles.data || [];
   ETAT.liens = resLiens.data || [];
   ETAT.taches = resTaches.data || [];
   ETAT.assignations = resAssignations.data || [];
   ETAT.sousTaches = resSousTaches.data || [];
+  ETAT.clients = resClients.data || [];
+  ETAT.membresClient = resMembresClient.data || [];
+  ETAT.demandes = resDemandes.data || [];
   ETAT.moi = ETAT.profils.find(utilisateur => utilisateur.id === ETAT.utilisateur.id);
 }
 async function recharger() {
@@ -205,7 +236,7 @@ function vueConnexion() {
   const estInscription = ETAT.mode === 'inscription';
   trouver('#application').innerHTML = `<div class="connexion"><section class="connexion-marque"><div class="logo">3xCom</div><p class="serif">L’agence 3xCom, tâche après tâche.</p></section>
   <section class="connexion-formulaire"><form id="formulaire-connexion"><h2>${estInscription ? 'Créer un compte' : 'Connexion'}</h2><p class="discret">${estInscription ? 'Un administrateur validera votre accès.' : 'Retrouvez vos tâches et vos pôles.'}</p>
-  ${estInscription ? '<label for="champ-nom-complet">Nom complet</label><input id="champ-nom-complet" name="nom_complet" required autocomplete="name">' : ''}
+  ${estInscription ? '<label for="champ-nom-complet">Nom complet</label><input id="champ-nom-complet" name="nom_complet" required autocomplete="name"><label for="champ-type-compte">Je suis</label><select id="champ-type-compte" name="type_compte"><option value="membre">Membre de l’équipe 3xCom</option><option value="client">Client de 3xCom</option></select>' : ''}
   <label for="champ-email">Adresse e-mail</label><input id="champ-email" name="email" type="email" required autocomplete="email">
   <label for="champ-mot-de-passe">Mot de passe</label><input id="champ-mot-de-passe" name="password" type="password" minlength="6" required autocomplete="${estInscription ? 'new-password' : 'current-password'}">
   <p class="erreur" id="erreur" role="alert"></p><button class="bouton" style="width:100%;justify-content:center">${estInscription ? 'Créer mon compte' : 'Se connecter'}</button>
@@ -215,14 +246,14 @@ function vueAttente(message) {
   trouver('#application').innerHTML = `<div class="centre"><div class="logo" style="color:var(--encre)">3xCom</div><h1>Presque prêt</h1><p class="discret">${echapper(message)}</p><button class="bouton fantome" data-action="deconnexion">Se déconnecter</button>${boutonInstaller()}</div>`;
 }
 function afficher() {
-  const entreesNav = [['accueil', 'Accueil'], ['taches', 'Tâches'], ['tableau', 'Tableau'], ['agenda', 'Agenda'], ['poles', 'Pôles'], ...(estAdmin() ? [['equipe', 'Équipe']] : [])];
-  if (!entreesNav.some(nom => nom[0] === ETAT.vue)) ETAT.vue = 'accueil';
+  const entreesNav = estClient() ? [['demandes', 'Mes demandes']] : [['accueil', 'Accueil'], ['taches', 'Tâches'], ['tableau', 'Tableau'], ['agenda', 'Agenda'], ['poles', 'Pôles'], ...(gereDemandes() ? [['demandes', 'Demandes']] : []), ...(estAdmin() ? [['equipe', 'Équipe']] : [])];
+  if (!entreesNav.some(nom => nom[0] === ETAT.vue)) ETAT.vue = entreesNav[0][0];
   const moi = ETAT.moi;
   trouver('#application').innerHTML = `<aside><div class="logo">3xCom</div><nav>${entreesNav.map(([cle, libelle]) => `<button class="menu ${ETAT.vue === cle ? 'actif' : ''}" data-action="navigation" data-vue="${cle}">${icone(cle)}${libelle}</button>`).join('')}</nav>
   <div class="moi"><div><b>${echapper(nomDe(moi))}</b>${ROLES[moi.role]}</div>${boutonInstaller('bouton clair cta-large', 'Installer 3xCom')}<button data-action="deconnexion">Se déconnecter</button></div></aside>
   <div class="coque"><header class="barre-haute"><div class="logo">3xCom</div><div class="barre-actions">${boutonInstaller('cta-mini', 'Installer')}<button data-action="deconnexion">Quitter</button></div></header>
-  <main>${vues[ETAT.vue]()}</main>
-  <nav class="barre-basse">${entreesNav.map(([cle, libelle]) => `<button class="onglet ${ETAT.vue === cle ? 'actif' : ''}" data-action="navigation" data-vue="${cle}">${icone(cle)}${libelle.split(' ')[0]}</button>`).join('')}</nav></div>`;
+  <main${entreesNav.length > 1 ? '' : ' class="sans-barre"'}>${vues[ETAT.vue]()}</main>
+  ${entreesNav.length > 1 ? `<nav class="barre-basse">${entreesNav.map(([cle, libelle]) => `<button class="onglet ${ETAT.vue === cle ? 'actif' : ''}" data-action="navigation" data-vue="${cle}">${icone(cle)}${libelle.split(' ')[0]}</button>`).join('')}</nav>` : ''}</div>`;
 }
 const enTete = (titre, sousTitre, action = '') => `<div class="entete"><div><h1>${titre}</h1><p>${sousTitre}</p></div>${action}</div>`;
 const ligneTache = tache => {
@@ -239,7 +270,7 @@ const barreFiltres = () => {
   const creerOptions = (liste, valeur, texteTous) => `<option value="">${texteTous}</option>` + liste.map(([cle, libelle]) => `<option value="${cle}" ${valeur === cle ? 'selected' : ''}>${echapper(libelle)}</option>`).join('');
   return `<div class="filtres"><button class="bascule ${ETAT.filtres.miennes ? 'actif' : ''}" data-action="miennes">Mes tâches</button>
   <select data-filtre="pole" aria-label="Pôle">${creerOptions(ETAT.poles.map(pole => [pole.id, pole.nom]), ETAT.filtres.pole, 'Tous les pôles')}</select>
-  <select data-filtre="qui" aria-label="Assigné à">${creerOptions(ETAT.profils.filter(utilisateur => utilisateur.actif).map(utilisateur => [utilisateur.id, nomDe(utilisateur)]), ETAT.filtres.qui, 'Tout le monde')}</select></div>`;
+  <select data-filtre="qui" aria-label="Assigné à">${creerOptions(ETAT.profils.filter(utilisateur => utilisateur.actif && estPersonnelCompte(utilisateur)).map(utilisateur => [utilisateur.id, nomDe(utilisateur)]), ETAT.filtres.qui, 'Tout le monde')}</select></div>`;
 };
 const boutonNouvelleTache = date => polesGeres().length ? `<button class="bouton" data-action="nouvelle_tache" ${date ? `data-date="${date}"` : ''}>Nouvelle tâche</button>` : '';
 const carteTache = (tache, indice) => {
@@ -264,7 +295,7 @@ const vues = {
       day: 'numeric',
       month: 'long'
     });
-    return enTete(`Bonjour ${echapper((ETAT.moi.nom_complet || '').split(' ')[0] || '')}`, libelleDate) + `<div class="panneau stats"><div class="stat"><b>${ouvertes.length}</b><span>Tâches ouvertes</span></div><div class="stat ${tachesEnRetard.length ? 'alerte' : ''}"><b>${tachesEnRetard.length}</b><span>En retard</span></div>
+    return enTete(`Bonjour ${echapper((ETAT.moi.nom_complet || '').split(' ')[0] || '')}`, libelleDate) + bandeauDemandes() + `<div class="panneau stats"><div class="stat"><b>${ouvertes.length}</b><span>Tâches ouvertes</span></div><div class="stat ${tachesEnRetard.length ? 'alerte' : ''}"><b>${tachesEnRetard.length}</b><span>En retard</span></div>
       <div class="stat"><b>${ETAT.taches.filter(tache => tache.statut === 'relecture').length}</b><span>En relecture</span></div><div class="stat"><b>${ETAT.taches.filter(tache => tache.statut === 'terminee').length}</b><span>Terminées</span></div></div>
       <div class="colonnes"><section class="panneau"><h2>Mes prochaines tâches</h2>${mesTaches.length ? mesTaches.map(ligneTache).join('') : '<div class="vide">Rien à faire pour le moment.</div>'}</section>
       <section class="panneau"><h2>Avancement par pôle</h2>${ETAT.poles.length ? ETAT.poles.map(pole => {
@@ -278,7 +309,7 @@ const vues = {
     const creerOptions = (liste, valeur, texteTous) => `<option value="">${texteTous}</option>` + liste.map(([cle, libelle]) => `<option value="${cle}" ${valeur === cle ? 'selected' : ''}>${echapper(libelle)}</option>`).join('');
     return enTete('Tâches', `${liste.length} tâche${liste.length > 1 ? 's' : ''}`, polesGeres().length ? '<button class="bouton" data-action="nouvelle_tache">Nouvelle tâche</button>' : '') + `<div class="filtres"><button class="bascule ${filtres.miennes ? 'actif' : ''}" data-action="miennes">Mes tâches</button>
       <select data-filtre="pole" aria-label="Pôle">${creerOptions(ETAT.poles.map(pole => [pole.id, pole.nom]), filtres.pole, 'Tous les pôles')}</select>
-      <select data-filtre="qui" aria-label="Assigné à">${creerOptions(ETAT.profils.filter(utilisateur => utilisateur.actif).map(utilisateur => [utilisateur.id, nomDe(utilisateur)]), filtres.qui, 'Tout le monde')}</select>
+      <select data-filtre="qui" aria-label="Assigné à">${creerOptions(ETAT.profils.filter(utilisateur => utilisateur.actif && estPersonnelCompte(utilisateur)).map(utilisateur => [utilisateur.id, nomDe(utilisateur)]), filtres.qui, 'Tout le monde')}</select>
       <select data-filtre="statut" aria-label="Statut">${creerOptions(Object.entries(STATUTS), filtres.statut, 'Tous les statuts')}</select></div>
       <div class="panneau">${liste.length ? liste.map(ligneTache).join('') : `<div class="vide">Aucune tâche ne correspond.${polesGeres().length ? '<button class="bouton" data-action="nouvelle_tache">Créer une tâche</button>' : ''}</div>`}</div>`;
   },
@@ -336,23 +367,16 @@ const vues = {
       ${polesGeres().length ? `<div style="padding:14px 20px;border-top:1px solid var(--ligne)"><button class="bouton fantome" data-action="nouvelle_tache" data-date="${ETAT.jour}">Ajouter une tâche ce jour</button></div>` : ''}</section>`;
   },
   equipe() {
-    return enTete('Équipe', `${ETAT.profils.length} compte${ETAT.profils.length > 1 ? 's' : ''}`) + `<div class="panneau">${ETAT.profils.map(utilisateur => {
-      const estMoi = utilisateur.id === ETAT.moi.id,
-        nom = echapper(nomDe(utilisateur)),
-        nomsPoles = ETAT.liens.filter(membre => membre.utilisateur_id === utilisateur.id).map(membre => poleDe(membre.pole_id)?.nom).filter(Boolean);
-      return `<div class="membre${utilisateur.actif ? '' : ' en-attente'}"><span class="avatar">${initiales(nomDe(utilisateur))}</span>
-      <div class="membre-infos"><div class="membre-nom"><b>${nom}</b>${estMoi ? '<span class="etiquette">Vous</span>' : ''}${utilisateur.actif ? '' : '<span class="etiquette haute">En attente</span>'}</div>
-      <small class="discret membre-email">${echapper(utilisateur.email)}</small>
-      ${nomsPoles.length ? `<div class="membre-poles">${nomsPoles.map(nomPole => `<span class="etiquette">${echapper(nomPole)}</span>`).join('')}</div>` : ''}</div>
-      <div class="membre-actions"><select data-role="${utilisateur.id}" ${estMoi ? 'disabled' : ''} aria-label="Rôle de ${nom}">${Object.entries(ROLES).map(([cle, libelle]) => `<option value="${cle}" ${utilisateur.role === cle ? 'selected' : ''}>${libelle}</option>`).join('')}</select>
-      <label class="interrupteur"><input type="checkbox" role="switch" data-actif="${utilisateur.id}" ${utilisateur.actif ? 'checked' : ''} ${estMoi ? 'disabled' : ''}><span>Actif</span></label></div></div>`;
-    }).join('')}</div><p class="discret" style="margin-top:14px">Rattachez les membres à leurs pôles depuis la page Pôles.</p>`;
+    return ETAT.ongletEquipe === 'clients' ? vueClients() : vueComptes();
+  },
+  demandes() {
+    return estClient() ? vueDemandesClient() : vueDemandesAgence();
   }
 };
 
 /* ---------- Formulaires ---------- */
 const casesAssignation = (idPole, coches, desactive = '') => {
-  const candidats = ETAT.profils.filter(utilisateur => utilisateur.actif && (ETAT.liens.some(lien => lien.pole_id === idPole && lien.utilisateur_id === utilisateur.id) || coches.includes(utilisateur.id)));
+  const candidats = ETAT.profils.filter(utilisateur => utilisateur.actif && estPersonnelCompte(utilisateur) && (ETAT.liens.some(lien => lien.pole_id === idPole && lien.utilisateur_id === utilisateur.id) || coches.includes(utilisateur.id)));
   return candidats.length ? candidats.map(utilisateur => `<label><input type="checkbox" name="assignes" value="${utilisateur.id}" ${coches.includes(utilisateur.id) ? 'checked' : ''} ${desactive}>${echapper(nomDe(utilisateur))}</label>`).join('') : '<p class="discret">Aucun membre dans ce pôle.</p>';
 };
 const ligneSousTache = (sousTache, editable, peutCocher) => `<div class="sous-tache" data-id="${sousTache.id || ''}"><input type="checkbox" aria-label="Terminée" ${sousTache.terminee ? 'checked' : ''} ${peutCocher ? '' : 'disabled'}><input type="text" value="${echapper(sousTache.titre)}" aria-label="Titre de la sous-tâche" ${editable ? '' : 'disabled'}>${editable ? '<button type="button" class="deplacer" data-action="retirer_sous_tache" aria-label="Retirer la sous-tâche">×</button>' : ''}</div>`;
@@ -478,8 +502,10 @@ function formulairePole(id) {
     idsMembres = ETAT.liens.filter(lien => lien.pole_id === id).map(lien => lien.utilisateur_id);
   ouvrirModale(`<form class="formulaire-modale" id="formulaire-pole" data-id="${id || ''}"><h2>${id ? 'Modifier le pôle' : 'Nouveau pôle'}</h2>
   <label for="champ-nom-pole">Nom</label><input id="champ-nom-pole" name="nom" required value="${echapper(pole.nom)}"><label for="champ-description-pole">Description</label><textarea id="champ-description-pole" name="description" rows="2">${echapper(pole.description)}</textarea>
+  <label class="preference" style="color:var(--encre);font-weight:500"><input type="checkbox" name="accepte_demandes" ${pole.accepte_demandes === false ? '' : 'checked'}>Ce pôle accepte les demandes des clients</label>
+  <label for="champ-modele-demande">Modèle de demande</label><textarea id="champ-modele-demande" name="modele_demande" rows="4" placeholder="Texte qui préremplit la description quand le client choisit ce pôle">${echapper(pole.modele_demande)}</textarea><small class="discret aide-champ">Listez les informations que le client doit fournir (supports, format, délai…).</small>
   <label>Couleur</label><div class="nuancier">${COULEURS.map(couleur => `<label class="nuance" style="color:${couleur};margin:0"><input type="radio" name="couleur" value="${couleur}" ${couleur === pole.couleur ? 'checked' : ''}><span></span></label>`).join('')}</div>
-  <label>Membres</label><div class="cases">${ETAT.profils.filter(utilisateur => utilisateur.actif).map(utilisateur => `<label><input type="checkbox" name="membres" value="${utilisateur.id}" ${idsMembres.includes(utilisateur.id) ? 'checked' : ''}>${echapper(nomDe(utilisateur))} <small class="discret">${ROLES[utilisateur.role]}</small></label>`).join('')}</div>
+  <label>Membres</label><div class="cases">${ETAT.profils.filter(utilisateur => utilisateur.actif && estPersonnelCompte(utilisateur)).map(utilisateur => `<label><input type="checkbox" name="membres" value="${utilisateur.id}" ${idsMembres.includes(utilisateur.id) ? 'checked' : ''}>${echapper(nomDe(utilisateur))} <small class="discret">${ROLES[utilisateur.role]}</small></label>`).join('')}</div>
   <div class="actions">${id ? '<button type="button" class="bouton danger" data-action="supprimer_pole">Supprimer</button>' : ''}<button type="button" class="bouton fantome" data-action="fermer">Annuler</button><button class="bouton">Enregistrer</button></div></form>`);
 }
 async function enregistrerPole(formulaire) {
@@ -488,7 +514,9 @@ async function enregistrerPole(formulaire) {
     enregistrement = {
       nom: donnees.get('nom').trim(),
       description: donnees.get('description'),
-      couleur: donnees.get('couleur')
+      couleur: donnees.get('couleur'),
+      accepte_demandes: donnees.get('accepte_demandes') === 'on',
+      modele_demande: donnees.get('modele_demande') || ''
     };
   let idPole = id;
   if (id) {
@@ -514,6 +542,218 @@ async function enregistrerPole(formulaire) {
   await chargerTout();
   afficher();
   notifier('Pôle enregistré');
+}
+
+/* ---------- Équipe : comptes et clients ---------- */
+const ongletsEquipe = () => `<div class="filtres"><button class="bascule ${ETAT.ongletEquipe === 'clients' ? '' : 'actif'}" data-action="onglet_equipe" data-onglet="comptes">Comptes</button><button class="bascule ${ETAT.ongletEquipe === 'clients' ? 'actif' : ''}" data-action="onglet_equipe" data-onglet="clients">Clients</button></div>`;
+function vueComptes() {
+  const total = ETAT.profils.length;
+  return enTete('Équipe', `${total} compte${total > 1 ? 's' : ''}`) + ongletsEquipe() + `<div class="panneau">${ETAT.profils.map(utilisateur => {
+    const estMoi = utilisateur.id === ETAT.moi.id,
+      nom = echapper(nomDe(utilisateur)),
+      etiquettes = utilisateur.role === 'client' ? groupesDe(utilisateur.id).map(client => client.nom) : ETAT.liens.filter(membre => membre.utilisateur_id === utilisateur.id).map(membre => poleDe(membre.pole_id)?.nom).filter(Boolean);
+    return `<div class="membre${utilisateur.actif ? '' : ' en-attente'}"><span class="avatar">${initiales(nomDe(utilisateur))}</span>
+    <div class="membre-infos"><div class="membre-nom"><b>${nom}</b>${estMoi ? '<span class="etiquette">Vous</span>' : ''}${utilisateur.actif ? '' : '<span class="etiquette haute">En attente</span>'}</div>
+    <small class="discret membre-email">${echapper(utilisateur.email)}</small>
+    ${etiquettes.length ? `<div class="membre-poles">${etiquettes.map(libelle => `<span class="etiquette">${echapper(libelle)}</span>`).join('')}</div>` : ''}</div>
+    <div class="membre-actions"><select data-role="${utilisateur.id}" ${estMoi ? 'disabled' : ''} aria-label="Rôle de ${nom}">${Object.entries(ROLES).map(([cle, libelle]) => `<option value="${cle}" ${utilisateur.role === cle ? 'selected' : ''}>${libelle}</option>`).join('')}</select>
+    <label class="interrupteur"><input type="checkbox" role="switch" data-actif="${utilisateur.id}" ${utilisateur.actif ? 'checked' : ''} ${estMoi ? 'disabled' : ''}><span>Actif</span></label></div></div>`;
+  }).join('')}</div><p class="discret" style="margin-top:14px">Rattachez les membres à leurs pôles depuis la page Pôles, et les clients à leur groupe depuis l’onglet Clients.</p>`;
+}
+function vueClients() {
+  const liste = ETAT.clients;
+  return enTete('Équipe', `${liste.length} client${liste.length > 1 ? 's' : ''}`, '<button class="bouton" data-action="nouveau_client">Nouveau client</button>') + ongletsEquipe() + (liste.length ? `<div class="cartes">${liste.map(client => {
+    const membres = ETAT.membresClient.filter(lien => lien.client_id === client.id).map(lien => utilisateurDe(lien.utilisateur_id)).filter(Boolean),
+      demandes = ETAT.demandes.filter(demande => demande.client_id === client.id),
+      ouvertes = demandes.filter(demande => !['terminee', 'refusee'].includes(demande.statut)).length;
+    return `<button class="pole" style="--couleur:#2C5AA0" data-action="modifier_client" data-id="${client.id}"><h2>${echapper(client.nom)}</h2><p class="discret">${echapper(client.description) || 'Aucune description'}</p>
+      <div class="discret">${demandes.length} demande${demandes.length > 1 ? 's' : ''} · ${ouvertes} en cours</div>
+      <div style="display:flex">${membres.slice(0, 5).map(utilisateur => `<span class="avatar" title="${echapper(nomDe(utilisateur))}" style="margin-right:-8px;border:2px solid #fff">${initiales(nomDe(utilisateur))}</span>`).join('')}${membres.length > 5 ? `<span class="discret" style="margin-left:16px">+${membres.length - 5}</span>` : ''}${membres.length ? '' : '<span class="discret">Aucune personne rattachée</span>'}</div></button>`;
+  }).join('')}</div>` : '<div class="panneau"><div class="vide">Créez votre premier client, puis rattachez-y les personnes qui ont créé un compte client.<button class="bouton" data-action="nouveau_client">Nouveau client</button></div></div>');
+}
+function formulaireClient(id) {
+  const client = id ? clientDe(id) : {},
+    idsMembres = ETAT.membresClient.filter(lien => lien.client_id === id).map(lien => lien.utilisateur_id),
+    comptes = ETAT.profils.filter(utilisateur => utilisateur.role === 'client');
+  ouvrirModale(`<form class="formulaire-modale" id="formulaire-client" data-id="${id || ''}"><h2>${id ? 'Modifier le client' : 'Nouveau client'}</h2>
+  <label for="champ-nom-client">Nom du client</label><input id="champ-nom-client" name="nom" required value="${echapper(client.nom)}">
+  <label for="champ-description-client">Description</label><textarea id="champ-description-client" name="description" rows="2">${echapper(client.description)}</textarea>
+  <label>Personnes du groupe</label><div class="cases">${comptes.length ? comptes.map(utilisateur => `<label><input type="checkbox" name="membres" value="${utilisateur.id}" ${idsMembres.includes(utilisateur.id) ? 'checked' : ''}>${echapper(nomDe(utilisateur))} <small class="discret">${utilisateur.actif ? echapper(utilisateur.email) : 'en attente de validation'}</small></label>`).join('') : '<p class="discret">Aucun compte client pour le moment. Les clients créent leur compte depuis l’écran de connexion (« Je suis » : Client), puis vous le validez dans Équipe.</p>'}</div>
+  <div class="actions">${id ? '<button type="button" class="bouton danger" data-action="supprimer_client">Supprimer</button>' : ''}<button type="button" class="bouton fantome" data-action="fermer">Annuler</button><button class="bouton">Enregistrer</button></div></form>`);
+}
+async function enregistrerClient(formulaire) {
+  const id = formulaire.dataset.id,
+    donnees = new FormData(formulaire),
+    enregistrement = {
+      nom: donnees.get('nom').trim(),
+      description: donnees.get('description')
+    };
+  let idClient = id;
+  if (id) {
+    const { error } = await bdd.from('clients').update(enregistrement).eq('id', id);
+    if (error) return notifier(error.message, 1);
+  } else {
+    const { data, error } = await bdd.from('clients').insert(enregistrement).select().single();
+    if (error) return notifier(error.message, 1);
+    idClient = data.id;
+  }
+  await bdd.from('membres_client').delete().eq('client_id', idClient);
+  const idsChoisis = donnees.getAll('membres');
+  if (idsChoisis.length) {
+    const { error } = await bdd.from('membres_client').insert(idsChoisis.map(idUtilisateur => ({ client_id: idClient, utilisateur_id: idUtilisateur })));
+    if (error) return notifier(error.message, 1);
+  }
+  fermerModale();
+  await chargerTout();
+  afficher();
+  notifier('Client enregistré');
+}
+async function supprimerClient(id) {
+  const { error } = await bdd.from('clients').delete().eq('id', id);
+  if (error) return notifier(error.message, 1);
+  fermerModale();
+  await chargerTout();
+  afficher();
+  notifier('Client supprimé');
+}
+
+/* ---------- Demandes d'intervention ---------- */
+const ligneDemande = demande => {
+  const pole = poleDe(demande.pole_id),
+    client = clientDe(demande.client_id),
+    suivi = SUIVI_DEMANDE.includes(demande.statut),
+    precisions = [estClient() && ETAT.clients.length < 2 ? '' : client?.nom, pole?.nom || 'Pôle non défini', 'reçue le ' + formaterDate(formatIso(new Date(demande.cree_le)))].filter(Boolean).map(echapper).join(' · ');
+  return `<button class="tache" data-action="demande" data-id="${demande.id}" style="--couleur:${pole?.couleur || '#697089'}"><span class="pastille"></span>
+  <span style="min-width:0"><b class="tronque" style="display:block">${echapper(demande.titre)}</b><small class="discret tronque" style="display:block">${precisions}</small></span>
+  <span class="etiquette ${demande.statut}">${STATUTS_DEMANDE[demande.statut]}</span>
+  <span class="tache-progression">${suivi ? `<span class="barre"><i style="width:${demande.progression}%"></i></span><small>${demande.progression}%</small>` : ''}</span>
+  <span class="tache-echeance">${demande.echeance_souhaitee ? 'Souhaitée : ' + formaterDate(demande.echeance_souhaitee) : 'Sans échéance'}</span></button>`;
+};
+function vueDemandesClient() {
+  const action = ETAT.clients.length && polesOuverts().length ? '<button class="bouton" data-action="nouvelle_demande">Nouvelle demande</button>' : '';
+  let corps;
+  if (!ETAT.clients.length) corps = '<div class="vide">Votre compte n’est pas encore rattaché à un groupe client. Contactez 3xCom pour finaliser votre accès.</div>';
+  else if (!ETAT.demandes.length) corps = `<div class="vide">Vous n’avez fait aucune demande pour le moment.${action ? '<button class="bouton" data-action="nouvelle_demande">Faire une demande</button>' : ''}</div>`;
+  else corps = ETAT.demandes.map(ligneDemande).join('');
+  return enTete('Mes demandes', ETAT.clients.map(client => echapper(client.nom)).join(', ') || 'Suivi de vos demandes d’intervention', action) + `<div class="panneau">${corps}</div>`;
+}
+function vueDemandesAgence() {
+  const filtres = ETAT.filtres,
+    liste = ETAT.demandes.filter(demande => (!filtres.demandeStatut || demande.statut === filtres.demandeStatut) && (!filtres.demandeClient || demande.client_id === filtres.demandeClient) && (!filtres.demandePole || demande.pole_id === filtres.demandePole)).sort((premiere, seconde) => (seconde.statut === 'nouvelle') - (premiere.statut === 'nouvelle')),
+    nouvelles = ETAT.demandes.filter(demande => demande.statut === 'nouvelle').length,
+    options = (elements, valeur, texteTous) => `<option value="">${texteTous}</option>` + elements.map(([cle, libelle]) => `<option value="${cle}" ${valeur === cle ? 'selected' : ''}>${echapper(libelle)}</option>`).join('');
+  return enTete('Demandes', `${liste.length} demande${liste.length > 1 ? 's' : ''}${nouvelles ? ` · ${nouvelles} à traiter` : ''}`, estAdmin() && ETAT.clients.length ? '<button class="bouton" data-action="nouvelle_demande">Nouvelle demande</button>' : '') + `<div class="filtres">
+    <select data-filtre="demandeStatut" aria-label="Statut">${options(Object.entries(STATUTS_DEMANDE), filtres.demandeStatut, 'Tous les statuts')}</select>
+    <select data-filtre="demandeClient" aria-label="Client">${options(ETAT.clients.map(client => [client.id, client.nom]), filtres.demandeClient, 'Tous les clients')}</select>
+    <select data-filtre="demandePole" aria-label="Pôle">${options(ETAT.poles.map(pole => [pole.id, pole.nom]), filtres.demandePole, 'Tous les pôles')}</select></div>
+    <div class="panneau">${liste.length ? liste.map(ligneDemande).join('') : '<div class="vide">Aucune demande ne correspond.</div>'}</div>`;
+}
+function formulaireDemande() {
+  const poles = polesOuverts(),
+    groupes = ETAT.clients;
+  if (!groupes.length) return notifier('Aucun groupe client n’est disponible.', 1);
+  if (!poles.length) return notifier('Aucun pôle n’accepte de demandes pour le moment.', 1);
+  const premier = poles[0],
+    modele = echapper(premier.modele_demande || '');
+  ouvrirModale(`<form class="formulaire-modale" id="formulaire-demande"><h2>Nouvelle demande</h2><p class="discret">Décrivez l’intervention souhaitée : l’agence vous répond directement ici.</p>
+  ${groupes.length > 1 || estAdmin() ? `<label for="champ-client">Client</label><select id="champ-client" name="client_id">${groupes.map(client => `<option value="${client.id}">${echapper(client.nom)}</option>`).join('')}</select>` : `<input type="hidden" name="client_id" value="${groupes[0].id}">`}
+  <label for="champ-pole-demande">Pôle concerné</label><select id="champ-pole-demande" name="pole_id">${poles.map(pole => `<option value="${pole.id}">${echapper(pole.nom)}</option>`).join('')}</select><small class="discret aide-champ" id="aide-pole">${echapper(premier.description)}</small>
+  <label for="champ-titre-demande">Objet de la demande</label><input id="champ-titre-demande" name="titre" required maxlength="140">
+  <label for="champ-description-demande">Description</label><textarea id="champ-description-demande" name="description" rows="6" data-modele="${modele}">${modele}</textarea>
+  <div class="grille2"><div><label for="champ-urgence">Urgence</label><select id="champ-urgence" name="urgence">${Object.entries(PRIORITES).map(([cle, libelle]) => `<option value="${cle}" ${cle === 'normale' ? 'selected' : ''}>${libelle}</option>`).join('')}</select></div>
+  <div><label for="champ-echeance-demande">Date souhaitée</label><input id="champ-echeance-demande" type="date" name="echeance_souhaitee" min="${aujourdhui()}"></div></div>
+  <div class="actions"><button type="button" class="bouton fantome" data-action="fermer">Annuler</button><button class="bouton">Envoyer la demande</button></div></form>`);
+}
+async function enregistrerDemande(formulaire) {
+  const donnees = Object.fromEntries(new FormData(formulaire)),
+    { error } = await bdd.from('demandes').insert({
+      client_id: donnees.client_id,
+      pole_id: donnees.pole_id,
+      titre: donnees.titre.trim(),
+      description: donnees.description.trim(),
+      urgence: donnees.urgence,
+      echeance_souhaitee: donnees.echeance_souhaitee || null
+    });
+  if (error) return notifier(error.message, 1);
+  fermerModale();
+  await chargerTout();
+  afficher();
+  notifier('Demande envoyée');
+}
+function ouvrirDemande(id) {
+  const demande = ETAT.demandes.find(element => element.id === id);
+  if (!demande) return;
+  const pole = poleDe(demande.pole_id),
+    client = clientDe(demande.client_id),
+    auteur = utilisateurDe(demande.cree_par),
+    lie = Boolean(demande.tache_id),
+    suivi = SUIVI_DEMANDE.includes(demande.statut),
+    peutTraiter = !estClient() && (estAdmin() || peutGerer(demande.pole_id));
+  const resume = `<h2>${echapper(demande.titre)}</h2><div class="demande-meta"><span class="etiquette ${demande.statut}">${STATUTS_DEMANDE[demande.statut]}</span>${demande.urgence === 'haute' ? '<span class="etiquette haute">Urgence haute</span>' : ''}</div>
+  ${suivi ? `<div class="tache-progression" style="margin-top:14px"><span class="barre"><i style="width:${demande.progression}%"></i></span><small>${demande.progression}%</small></div>` : ''}
+  <dl class="detail">${!estClient() || ETAT.clients.length > 1 ? `<dt>Client</dt><dd>${echapper(client?.nom || '—')}</dd>` : ''}<dt>Pôle</dt><dd>${echapper(pole?.nom || '—')}</dd><dt>Demandée par</dt><dd>${echapper(auteur ? nomDe(auteur) : '—')}, le ${formaterDate(formatIso(new Date(demande.cree_le)))}</dd><dt>Date souhaitée</dt><dd>${demande.echeance_souhaitee ? formaterDate(demande.echeance_souhaitee) : '—'}</dd></dl>
+  <label>Description</label><p class="texte-libre">${echapper(demande.description) || 'Aucune description'}</p>`;
+  if (estClient()) {
+    ouvrirModale(`<div class="formulaire-modale">${resume}${demande.reponse ? `<label>Réponse de l’agence</label><p class="texte-libre reponse">${echapper(demande.reponse)}</p>` : ''}<div class="actions"><button type="button" class="bouton" data-action="fermer">Fermer</button></div></div>`);
+    return;
+  }
+  const voirTache = lie && ETAT.taches.some(tache => tache.id === demande.tache_id),
+    creerTache = !lie && peutTraiter && demande.statut !== 'refusee';
+  ouvrirModale(`<form class="formulaire-modale" id="formulaire-traitement" data-id="${demande.id}">${resume}
+  <div class="grille2"><div><label for="champ-statut-demande">Statut</label><select id="champ-statut-demande" name="statut" ${lie || !peutTraiter ? 'disabled' : ''}>${Object.entries(STATUTS_DEMANDE).map(([cle, libelle]) => `<option value="${cle}" ${demande.statut === cle ? 'selected' : ''}>${libelle}</option>`).join('')}</select></div>
+  ${estAdmin() ? `<div><label for="champ-pole-traitement">Pôle</label><select id="champ-pole-traitement" name="pole_id">${demande.pole_id ? '' : '<option value="">—</option>'}${ETAT.poles.map(element => `<option value="${element.id}" ${element.id === demande.pole_id ? 'selected' : ''}>${echapper(element.nom)}</option>`).join('')}</select></div>` : ''}</div>
+  ${lie ? '<small class="discret aide-champ">Le statut suit automatiquement l’avancement de la tâche liée.</small>' : ''}
+  <label for="champ-reponse">Réponse au client</label><textarea id="champ-reponse" name="reponse" rows="3" placeholder="Message visible par le client" ${peutTraiter ? '' : 'disabled'}>${echapper(demande.reponse)}</textarea>
+  <div class="actions">${estAdmin() ? '<button type="button" class="bouton danger" data-action="supprimer_demande">Supprimer</button>' : ''}${voirTache ? `<button type="button" class="bouton fantome" data-action="voir_tache" data-id="${demande.tache_id}">Voir la tâche</button>` : ''}${creerTache ? '<button type="button" class="bouton fantome" data-action="convertir_demande">Créer la tâche</button>' : ''}<button type="button" class="bouton fantome" data-action="fermer">${peutTraiter ? 'Annuler' : 'Fermer'}</button>${peutTraiter ? '<button class="bouton">Enregistrer</button>' : ''}</div></form>`);
+}
+async function enregistrerTraitement(formulaire) {
+  const id = formulaire.dataset.id,
+    demande = ETAT.demandes.find(element => element.id === id),
+    champs = formulaire.elements,
+    modifs = { reponse: champs.reponse.value.trim() };
+  if (!demande) return;
+  if (!demande.tache_id && champs.statut && !champs.statut.disabled) modifs.statut = champs.statut.value;
+  if (estAdmin() && champs.pole_id && champs.pole_id.value && champs.pole_id.value !== demande.pole_id) modifs.pole_id = champs.pole_id.value;
+  const { error } = await bdd.from('demandes').update(modifs).eq('id', id);
+  if (error) return notifier(error.message, 1);
+  fermerModale();
+  await chargerTout();
+  afficher();
+  notifier('Demande enregistrée');
+}
+async function convertirDemande(id) {
+  const demande = ETAT.demandes.find(element => element.id === id),
+    formulaire = trouver('#formulaire-traitement');
+  if (!demande || !formulaire) return;
+  const idPole = estAdmin() && formulaire.elements.pole_id && formulaire.elements.pole_id.value ? formulaire.elements.pole_id.value : demande.pole_id,
+    reponse = formulaire.elements.reponse.value.trim();
+  if (!idPole || !peutGerer(idPole)) return notifier('Vous ne pouvez pas créer de tâche dans ce pôle.', 1);
+  const client = clientDe(demande.client_id),
+    { data: tache, error } = await bdd.from('taches').insert({
+      titre: demande.titre,
+      description: `Demande de ${client?.nom || 'un client'}${demande.description ? '\n\n' + demande.description : ''}`,
+      pole_id: idPole,
+      priorite: demande.urgence,
+      echeance: demande.echeance_souhaitee || null
+    }).select().single();
+  if (error) return notifier(error.message, 1);
+  const modifs = { tache_id: tache.id, reponse };
+  if (estAdmin() && idPole !== demande.pole_id) modifs.pole_id = idPole;
+  const { error: erreurLien } = await bdd.from('demandes').update(modifs).eq('id', id);
+  if (erreurLien) return notifier(erreurLien.message, 1);
+  fermerModale();
+  await chargerTout();
+  afficher();
+  notifier('Tâche créée : assignez-la à l’équipe');
+  if (ETAT.taches.some(element => element.id === tache.id)) formulaireTache(tache.id);
+}
+async function supprimerDemande(id) {
+  const { error } = await bdd.from('demandes').delete().eq('id', id);
+  if (error) return notifier(error.message, 1);
+  fermerModale();
+  await chargerTout();
+  afficher();
+  notifier('Demande supprimée');
 }
 
 /* ---------- Événements ---------- */
@@ -560,6 +800,26 @@ document.addEventListener('click', async evenement => {
     };
     ETAT.jour = !decalage || nouvelleDate.getFullYear() === maintenant.getFullYear() && nouvelleDate.getMonth() === maintenant.getMonth() ? aujourdhui() : formatIso(nouvelleDate);
     afficher();
+  } else if (action === 'nouvelle_demande') {
+    formulaireDemande();
+  } else if (action === 'demande') {
+    ouvrirDemande(id);
+  } else if (action === 'voir_tache') {
+    fermerModale();
+    formulaireTache(id);
+  } else if (action === 'convertir_demande') {
+    convertirDemande(trouver('#formulaire-traitement').dataset.id);
+  } else if (action === 'supprimer_demande' && confirm('Supprimer cette demande ?')) {
+    supprimerDemande(trouver('#formulaire-traitement').dataset.id);
+  } else if (action === 'onglet_equipe') {
+    ETAT.ongletEquipe = bouton.dataset.onglet;
+    afficher();
+  } else if (action === 'nouveau_client') {
+    formulaireClient();
+  } else if (action === 'modifier_client') {
+    formulaireClient(id);
+  } else if (action === 'supprimer_client' && confirm('Supprimer ce client et toutes ses demandes ?')) {
+    supprimerClient(trouver('#formulaire-client').dataset.id);
   } else if (action === 'nouveau_pole') formulairePole();else if (action === 'modifier_pole') formulairePole(id);else if (action === 'fermer') fermerModale();else if (action === 'supprimer_tache' && confirm('Supprimer cette tâche ?')) {
     const {
       error
@@ -585,6 +845,9 @@ document.addEventListener('submit', async evenement => {
   const formulaire = evenement.target;
   if (formulaire.id === 'formulaire-tache') return enregistrerTache(formulaire);
   if (formulaire.id === 'formulaire-pole') return enregistrerPole(formulaire);
+  if (formulaire.id === 'formulaire-demande') return enregistrerDemande(formulaire);
+  if (formulaire.id === 'formulaire-traitement') return enregistrerTraitement(formulaire);
+  if (formulaire.id === 'formulaire-client') return enregistrerClient(formulaire);
   if (formulaire.id === 'formulaire-connexion') {
     const donnees = Object.fromEntries(new FormData(formulaire)),
       zoneErreur = trouver('#erreur');
@@ -594,7 +857,8 @@ document.addEventListener('submit', async evenement => {
       password: donnees.password,
       options: {
         data: {
-          nom_complet: donnees.nom_complet
+          nom_complet: donnees.nom_complet,
+          type_compte: donnees.type_compte === 'client' ? 'client' : 'membre'
         }
       }
     }) : await bdd.auth.signInWithPassword({
@@ -617,6 +881,12 @@ document.addEventListener('change', async evenement => {
   if (attributs.filtre) {
     ETAT.filtres[attributs.filtre] = cible.value;
     afficher();
+  } else if (cible.id === 'champ-pole-demande') {
+    const pole = poleDe(cible.value),
+      zone = trouver('#champ-description-demande');
+    if (zone.value.trim() === '' || zone.value === zone.dataset.modele) zone.value = pole?.modele_demande || '';
+    zone.dataset.modele = pole?.modele_demande || '';
+    trouver('#aide-pole').textContent = pole?.description || '';
   } else if (cible.id === 'champ-pole') trouver('#champ-assignes').innerHTML = casesAssignation(cible.value, [...trouver('#champ-assignes').querySelectorAll('input:checked')].map(coche => coche.value).filter(idUtilisateur => ETAT.liens.some(lien => lien.pole_id === cible.value && lien.utilisateur_id === idUtilisateur)));else if (cible.id === 'champ-statut' && cible.value === 'terminee') {
     trouver('#champ-progression').value = 100;
     trouver('#valeur-progression').textContent = 100;
