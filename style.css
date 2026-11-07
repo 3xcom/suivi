@@ -175,3 +175,26 @@ input[type=checkbox],input[type=radio]{width:auto}
 .etapes-install{padding-left:20px;display:grid;gap:10px;margin-top:12px}
 .preference{display:flex;align-items:center;gap:10px;margin-top:22px;color:var(--discret);font-size:14px;font-weight:400}
 .preference input{width:18px;height:18px;accent-color:var(--accent);flex:none}
+/* Équipe : carte par membre (empilée sur mobile, une seule ligne sur grand panneau) */
+.membre{display:grid;grid-template-columns:40px minmax(0,1fr);gap:12px 14px;align-items:center;padding:16px 18px;border-top:1px solid var(--ligne)}
+.panneau>.membre:first-child{border-top:0}
+.membre.en-attente{background:#FFFBF4}
+.membre .avatar{width:40px;height:40px;font-size:13px}
+.membre-infos{min-width:0;display:grid;gap:2px}
+.membre-nom{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}
+.membre-nom b{overflow-wrap:anywhere}
+.membre-email{overflow-wrap:anywhere}
+.membre-poles{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.membre-actions{grid-column:2;display:flex;align-items:center;gap:14px}
+.membre-actions select{flex:1 1 auto;width:auto;min-width:0}
+.interrupteur{display:flex;align-items:center;gap:8px;margin:0;font-size:14px;font-weight:500;white-space:nowrap;cursor:pointer}
+.interrupteur input{-webkit-appearance:none;appearance:none;position:relative;flex:none;width:42px;height:24px;padding:0;border:0;border-radius:999px;background:#C9CCDA;cursor:pointer;transition:background .2s}
+.interrupteur input::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s}
+.interrupteur input:checked{background:var(--succes)}
+.interrupteur input:checked::after{transform:translateX(18px)}
+.interrupteur input:disabled{opacity:.45;cursor:default}
+@container (min-width:620px){
+  .membre{grid-template-columns:40px minmax(0,1fr) auto}
+  .membre-actions{grid-column:auto}
+  .membre-actions select{flex:none;width:180px}
+}
