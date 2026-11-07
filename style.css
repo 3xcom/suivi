@@ -198,3 +198,20 @@ input[type=checkbox],input[type=radio]{width:auto}
   .membre-actions{grid-column:auto}
   .membre-actions select{flex:none;width:180px}
 }
+
+/* Demandes des clients */
+.etiquette.nouvelle{background:var(--doux);color:var(--accent)}
+.etiquette.en_etude{background:#F8EDD6;color:#8A5A0B}
+.etiquette.acceptee{background:#E3EBF8;color:#24508F}
+.etiquette.refusee{background:#FBE4E1;color:var(--danger)}
+.bandeau{display:flex;align-items:center;gap:8px;width:100%;margin-bottom:18px;padding:12px 18px;border-radius:14px;background:var(--doux);color:var(--accent);font-weight:500;text-align:left}
+.bandeau:hover{background:#F0D3DE}
+.bandeau span:last-child{margin-left:auto;font-size:20px;line-height:1}
+main.sans-barre{padding-bottom:40px}
+.demande-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.detail{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:14px 0 0;font-size:14px}
+.detail dt{color:var(--discret)}
+.detail dd{margin:0;font-weight:500;overflow-wrap:anywhere}
+.texte-libre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--papier);border-radius:10px;padding:10px 12px;font-size:14px}
+.texte-libre.reponse{background:var(--doux)}
+.aide-champ{display:block;margin-top:6px}
