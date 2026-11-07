@@ -58,7 +58,7 @@ const nomDe = utilisateur => utilisateur ? utilisateur.nom_complet || utilisateu
 let bdd, invitationInstallation;
 // --- Installation de l'application (PWA) ---
 const ICONE_INSTALLER = '<svg class="icone-cta" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 20h16"/></svg>';
-const estInstallee = () => Boolean(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+const estInstallee = () => ['standalone', 'minimal-ui', 'fullscreen', 'window-controls-overlay'].some(mode => window.matchMedia && window.matchMedia(`(display-mode: ${mode})`).matches) || navigator.standalone === true;
 const estIos = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
 const estSafariMac = () => /^((?!chrome|chromium|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent) && navigator.platform === 'MacIntel' && !(navigator.maxTouchPoints > 1);
 const installationPossible = () => !estInstallee() && Boolean(invitationInstallation || estIos() || estSafariMac());
