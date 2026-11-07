@@ -163,7 +163,7 @@ input[type=checkbox],input[type=radio]{width:auto}
 .carte-pied-droite .avatar+.avatar{margin-left:-10px}
 /* Installation de l'application */
 .bouton.clair{background:#fff;color:var(--encre)}.bouton.clair:hover{background:var(--accent);color:#fff}
-.cta-installer[hidden]{display:none}
+.cta-installer[hidden]{display:none!important}
 .icone-cta{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
 .cta-large{width:100%;justify-content:center}
 .moi .bouton.clair{padding:10px 16px;text-align:center;color:var(--encre)}
