@@ -1,6 +1,6 @@
 // Service worker : « réseau d'abord » pour toujours servir la dernière version,
 // avec repli sur le cache hors connexion. Les données Supabase ne sont jamais mises en cache.
-const VERSION_CACHE = 'suivi-3xcom-v3';
+const VERSION_CACHE = 'suivi-3xcom-v4';
 const FICHIERS_BASE = ['./', 'index.html', 'app.js', 'config.js', 'style.css', 'manifest.json', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', evenement => {
   evenement.waitUntil(caches.open(VERSION_CACHE).then(cache => cache.addAll(FICHIERS_BASE)).then(() => self.skipWaiting()));

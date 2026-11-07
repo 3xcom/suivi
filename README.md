@@ -22,6 +22,11 @@ Le bouton « Installer 3xCom » s'affiche automatiquement (menu latéral, barre 
 - Le bouton disparaît une fois l'application installée ou si le navigateur ne la propose pas.
 L'installation exige HTTPS (GitHub Pages le fournit) : elle ne fonctionne pas en double-cliquant sur `index.html`.
 
+### Dictée vocale
+Le bouton **Demande par vocal** permet aux clients de dicter leur besoin sans choisir de pôle; l’agence l’orientera. Une date évoquée dans la dictée (par exemple « demain », « dans trois jours » ou « avant le 15 juin ») préremplit la date souhaitée. Une mention d’urgence (« c’est urgent », « au plus vite ») préremplit aussi la priorité. **Tâche par vocal** prépare une tâche pour les personnes autorisées à la créer. La personne démarre puis termine explicitement sa dictée et relit le formulaire avant de l’envoyer. La transcription affiche les mots reconnus en direct, peut reprendre l’écoute après une interruption et reste modifiable. Pour joindre aussi l’audio à une demande, cochez l’option proposée. La dictée nécessite un navigateur compatible (Chrome ou Edge recommandé), HTTPS et l’autorisation du micro.
+
+Exécutez `supabase/migration_audio_demandes.sql` dans l’éditeur SQL du projet Supabase après la mise en place des tables `demandes` et `membres_client`. Elle autorise les demandes sans pôle, ajoute les règles d’accès permettant à un client actif de créer une demande pour son groupe et de consulter ses propres demandes, puis configure l’envoi facultatif d’audio. Les fichiers sont conservés dans un espace privé; seul le demandeur et le personnel connecté peuvent les lire. L’enregistrement est facultatif et limité à 25 Mo.
+
 ## 4. Notifications par e-mail (Resend)
 E-mails envoyés : nouvelle tâche assignée, tâche passée « en relecture » (admins et responsables du pôle), nouvelle demande d'accès (admins), compte activé, et un rappel quotidien des retards/échéances. Chaque personne peut tout désactiver avec la case en bas de l'Accueil.
 

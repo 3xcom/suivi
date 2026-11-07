@@ -66,7 +66,7 @@ const formaterDate = date => date ? new Date(date + 'T00:00').toLocaleDateString
 }) : 'Sans échéance';
 const initiales = nom => (nom || '?').split(/\s+/).map(mot => mot[0]).slice(0, 2).join('').toUpperCase();
 const nomDe = utilisateur => utilisateur ? utilisateur.nom_complet || utilisateur.email : 'Non assignée';
-let bdd, invitationInstallation;
+let bdd, invitationInstallation, reconnaissanceEnCours, ecouteVocaleActive = false, idEcouteVocale = 0, redemarragesVocal = 0, enregistreurAudio, fluxAudio, morceauxAudio = [], audioDemandeVocal = null, finalisationAudio = Promise.resolve(), finalisationAudioEnCours = false;
 // --- Installation de l'application (PWA) ---
 const ICONE_INSTALLER = '<svg class="icone-cta" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 20h16"/></svg>';
 const estInstallee = () => ['standalone', 'minimal-ui', 'fullscreen', 'window-controls-overlay'].some(mode => window.matchMedia && window.matchMedia(`(display-mode: ${mode})`).matches) || navigator.standalone === true;
@@ -169,7 +169,166 @@ const ouvrirModale = html => {
   trouver('#dialogue').innerHTML = html;
   trouver('#dialogue').showModal();
 };
-const fermerModale = () => trouver('#dialogue').open && trouver('#dialogue').close();
+const fermerModale = () => {
+  ecouteVocaleActive = false;
+  idEcouteVocale++;
+  if (reconnaissanceEnCours) { reconnaissanceEnCours.abort(); reconnaissanceEnCours = null; }
+  if (enregistreurAudio?.state === 'recording') enregistreurAudio.stop();
+  fluxAudio?.getTracks().forEach(piste => piste.stop()); fluxAudio = null; enregistreurAudio = null;
+  if (trouver('#dialogue').open) trouver('#dialogue').close();
+};
+
+/* ---------- Saisie vocale ---------- */
+const reconnaissanceVocale = () => window.SpeechRecognition || window.webkitSpeechRecognition;
+function ouvrirSaisieVocale() {
+  if (!reconnaissanceVocale()) return notifier('La saisie vocale n’est pas disponible dans ce navigateur. Essayez Chrome ou Edge.', 1);
+  audioDemandeVocal = null;
+  const type = estClient() ? 'demande' : 'tache';
+  ouvrirModale(`<div class="formulaire-modale"><h2>${type === 'demande' ? 'Demande par vocal' : 'Tâche par vocal'}</h2><p class="discret">${type === 'demande' ? 'Dites simplement ce dont vous avez besoin. L’agence orientera la demande vers la bonne équipe.' : 'Dictez la tâche, son pôle et les personnes à assigner. Vous pourrez tout vérifier.'}</p><small class="discret">${type === 'demande' ? 'Si vous avez un délai ou si c’est urgent, dites-le : « pour demain », « avant le 15 juin », « c’est urgent ». Touchez « Commencer à parler », expliquez votre besoin, puis « J’ai terminé ».' : 'Exemple : « Visuel campagne de Noël, pôle création, assignée à Aïcha, échéance 15/12/2026, priorité urgente ».'}</small><textarea id="transcription-vocale" rows="5" placeholder="La transcription s’affichera ici. Vous pourrez la corriger." aria-label="Transcription vocale" aria-live="polite"></textarea>${type === 'demande' ? '<label class="option-audio"><input id="inclure-audio" type="checkbox"> Joindre aussi l’enregistrement audio</label>' : ''}<p id="etat-vocal" class="discret" aria-live="polite">Prêt. Touchez « Commencer à parler » lorsque vous êtes prêt.</p><div class="actions actions-vocal"><button type="button" class="bouton fantome" data-action="fermer">Annuler</button><button type="button" class="bouton bouton-vocal" data-action="demarrer-vocal">🎙️ Commencer à parler</button><button type="button" class="bouton fantome" data-action="terminer-vocal" disabled>J’ai terminé</button><button type="button" class="bouton" data-action="utiliser-vocal">Continuer</button></div></div>`);
+}
+async function demarrerVocal(bouton) {
+  const Reconnaissance = reconnaissanceVocale();
+  if (!Reconnaissance) return;
+  const reco = new Reconnaissance();
+  reco.lang = 'fr-FR'; reco.interimResults = true; reco.continuous = true; reco.maxAlternatives = 3;
+  const etat = trouver('#etat-vocal'), champ = trouver('#transcription-vocale'), terminer = trouver('[data-action="terminer-vocal"]');
+  let transcriptionFinale = champ.value;
+  const sessionVocale = ++idEcouteVocale;
+  try {
+    if (trouver('#inclure-audio')?.checked) {
+      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('enregistrement-indisponible');
+      fluxAudio = await navigator.mediaDevices.getUserMedia({ audio: true });
+      morceauxAudio = [];
+      enregistreurAudio = new MediaRecorder(fluxAudio);
+      enregistreurAudio.ondataavailable = evenement => { if (evenement.data.size) morceauxAudio.push(evenement.data); };
+      let terminerAudio; finalisationAudio = new Promise(resolve => { terminerAudio = resolve; });
+      const typeAudio = enregistreurAudio.mimeType || 'audio/webm';
+      enregistreurAudio.onstop = () => { audioDemandeVocal = morceauxAudio.length ? new Blob(morceauxAudio, { type: typeAudio }) : null; fluxAudio?.getTracks().forEach(piste => piste.stop()); fluxAudio = null; finalisationAudioEnCours = false; if (trouver('#etat-vocal')) trouver('#etat-vocal').textContent = audioDemandeVocal ? 'Enregistrement prêt à joindre à la demande.' : 'Aucun audio enregistré.'; const boutonParler = trouver('[data-action="demarrer-vocal"]'); if (boutonParler) boutonParler.disabled = false; terminerAudio(); };
+      enregistreurAudio.start();
+      finalisationAudioEnCours = true;
+    }
+    reco.onresult = evenement => { if (sessionVocale !== idEcouteVocale) return; let provisoire = ''; for (let i = evenement.resultIndex; i < evenement.results.length; i++) { const resultat = evenement.results[i], meilleure = Array.from(resultat).sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0]; if (resultat.isFinal) { transcriptionFinale = `${transcriptionFinale} ${meilleure.transcript}`.trim(); redemarragesVocal = 0; } else provisoire += meilleure.transcript; } champ.value = `${transcriptionFinale}${provisoire ? ' ' + provisoire : ''}`; etat.textContent = provisoire ? 'En écoute… la transcription provisoire peut encore changer.' : 'En écoute… touchez « J’ai terminé » à la fin de votre dictée.'; };
+    reco.onerror = evenement => { if (sessionVocale !== idEcouteVocale || evenement.error === 'no-speech') return; ecouteVocaleActive = false; etat.textContent = evenement.error === 'not-allowed' || evenement.error === 'service-not-allowed' ? 'Micro refusé. Autorisez-le dans votre navigateur, puis recommencez.' : 'La reconnaissance vocale a été interrompue. Touchez « Commencer à parler » pour réessayer.'; terminer.disabled = true; if (enregistreurAudio?.state === 'recording') enregistreurAudio.stop(); else if (!finalisationAudioEnCours) bouton.disabled = false; };
+    reco.onend = () => { if (sessionVocale !== idEcouteVocale) return; if (ecouteVocaleActive && redemarragesVocal < 3) { redemarragesVocal++; etat.textContent = 'Reprise de l’écoute…'; setTimeout(() => { if (!ecouteVocaleActive || sessionVocale !== idEcouteVocale) return; try { reco.start(); reconnaissanceEnCours = reco; } catch { ecouteVocaleActive = false; bouton.disabled = false; terminer.disabled = true; etat.textContent = 'L’écoute s’est arrêtée. Touchez « Commencer à parler » pour reprendre.'; } }, 250); return; } reconnaissanceEnCours = null; ecouteVocaleActive = false; terminer.disabled = true; if (enregistreurAudio?.state === 'recording') enregistreurAudio.stop(); else if (!finalisationAudioEnCours) bouton.disabled = false; };
+    reco.start(); reconnaissanceEnCours = reco; ecouteVocaleActive = true; redemarragesVocal = 0; bouton.disabled = true; terminer.disabled = false; etat.textContent = 'En écoute… touchez « J’ai terminé » à la fin de votre dictée.';
+  } catch (erreur) { if (enregistreurAudio?.state === 'recording') enregistreurAudio.stop(); fluxAudio?.getTracks().forEach(piste => piste.stop()); fluxAudio = null; bouton.disabled = false; terminer.disabled = true; etat.textContent = erreur.message === 'enregistrement-indisponible' ? 'L’enregistrement audio n’est pas pris en charge par ce navigateur.' : 'Le micro ne peut pas démarrer. Vérifiez son autorisation puis réessayez.'; }
+}
+function terminerVocal() {
+  ecouteVocaleActive = false;
+  idEcouteVocale++;
+  if (reconnaissanceEnCours) { const reco = reconnaissanceEnCours; reconnaissanceEnCours = null; reco.stop(); }
+  if (enregistreurAudio?.state === 'recording') enregistreurAudio.stop();
+  const bouton = trouver('[data-action="demarrer-vocal"]'), terminer = trouver('[data-action="terminer-vocal"]');
+  if (bouton && !finalisationAudioEnCours) bouton.disabled = false; if (terminer) terminer.disabled = true;
+  if (!enregistreurAudio) trouver('#etat-vocal').textContent = 'Dictée terminée. Relisez-la, puis continuez.';
+}
+const normaliserVoix = texte => texte.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('fr-FR');
+function prioriteVoix(texte) {
+  const phrase = normaliserVoix(texte).replace(/[’']/g, ' ');
+  if (/\b(pas urgent|pas d urgence|sans urgence|aucune urgence|pas presse)\b/.test(phrase)) return 'normale';
+  if (/\b(quand vous pouvez|quand ce sera possible|pas de delai particulier|priorite basse|priorite faible|faible priorite)\b/.test(phrase)) return 'basse';
+  if (/\b(urgent(?:e)?|urgence|prioritaire|priorite haute|haute priorite|au plus vite|des que possible|immediatement|des maintenant|asap)\b/.test(phrase)) return 'haute';
+  if (/\bpriorite normale\b/.test(phrase)) return 'normale';
+  return '';
+}
+function dateVoixVersIso(texte) {
+  const phrase = normaliserVoix(texte).replace(/[’']/g, ' ');
+  const maintenant = new Date(), aujourdHui = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate());
+  const iso = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  const valider = (annee, mois, jour, anneeImplicite = false) => {
+    let date = new Date(annee, mois - 1, jour);
+    if (date.getFullYear() !== annee || date.getMonth() !== mois - 1 || date.getDate() !== jour) return null;
+    if (date < aujourdHui && anneeImplicite) { date = new Date(annee + 1, mois - 1, jour); if (date.getMonth() !== mois - 1 || date.getDate() !== jour) return null; }
+    return date >= aujourdHui ? iso(date) : null;
+  };
+  const relative = (jours) => { const date = new Date(aujourdHui); date.setDate(date.getDate() + jours); return iso(date); };
+  if (/\b(apres demain|apres-demain)\b/.test(phrase)) return relative(2);
+  if (/\b(demain)\b/.test(phrase)) return relative(1);
+  if (/\b(aujourd hui|aujourd-hui|ce jour)\b/.test(phrase)) return relative(0);
+  const chiffresRelatifs = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10, onze: 11, douze: 12, treize: 13, quatorze: 14, quinze: 15, seize: 16, 'dix sept': 17, 'dix-huit': 18, 'dix huit': 18, 'dix-neuf': 19, 'dix neuf': 19, vingt: 20 };
+  let match = phrase.match(new RegExp(`\\bdans\\s+(\\d+|${Object.keys(chiffresRelatifs).sort((a,b) => b.length-a.length).join('|')})\\s+(jours?|semaines?)\\b`));
+  if (match) return relative((chiffresRelatifs[match[1]] || +match[1]) * (match[2].startsWith('semaine') ? 7 : 1));
+  if (/\b(fin du mois|fin de ce mois|d ici la fin du mois)\b/.test(phrase)) {
+    let dernier = new Date(aujourdHui.getFullYear(), aujourdHui.getMonth() + 1, 0);
+    if (dernier < aujourdHui) dernier = new Date(aujourdHui.getFullYear(), aujourdHui.getMonth() + 2, 0);
+    return iso(dernier);
+  }
+  const jourSemaine = { dimanche: 0, lundi: 1, mardi: 2, mercredi: 3, jeudi: 4, vendredi: 5, samedi: 6 };
+  match = phrase.match(/\b(?:d ici|avant|pour|le|ce)\s+(dimanche|lundi|mardi|mercredi|jeudi|vendredi|samedi)(?:\s+prochain(?:e)?)?\b/) || phrase.match(/\b(dimanche|lundi|mardi|mercredi|jeudi|vendredi|samedi)\s+prochain(?:e)?\b/);
+  if (match) {
+    const delta = (jourSemaine[match[1]] - aujourdHui.getDay() + 7) % 7;
+    const decalage = delta === 0 || /prochain/.test(match[0]) && delta === 0 ? 7 : delta;
+    return relative(decalage);
+  }
+  match = phrase.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  if (match) return valider(+match[1], +match[2], +match[3]);
+  match = phrase.match(/\b(?:le\s+|pour\s+le\s+|avant\s+le\s+|d ici le\s+)?(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b/);
+  if (match) { let annee = match[3] ? +match[3] : aujourdHui.getFullYear(); if (annee < 100) annee += 2000; return valider(annee, +match[2], +match[1], !match[3]); }
+  const moisNoms = { janvier: 1, fevrier: 2, mars: 3, avril: 4, mai: 5, juin: 6, juillet: 7, aout: 8, septembre: 9, octobre: 10, novembre: 11, decembre: 12 };
+  const nombres = { premier: 1, '1er': 1, un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10, onze: 11, douze: 12, treize: 13, quatorze: 14, quinze: 15, seize: 16, 'dix sept': 17, 'dix-sept': 17, 'dix huit': 18, 'dix-huit': 18, 'dix neuf': 19, 'dix-neuf': 19, vingt: 20, trente: 30 };
+  for (const [mot, jour] of [['et un', 1], ['et deux', 2], ['et trois', 3], ['et quatre', 4], ['et cinq', 5], ['et six', 6], ['et sept', 7], ['et huit', 8], ['et neuf', 9], ['un', 1], ['deux', 2], ['trois', 3], ['quatre', 4], ['cinq', 5], ['six', 6], ['sept', 7], ['huit', 8], ['neuf', 9]]) { nombres[`vingt ${mot}`] = 20 + jour; nombres[`vingt-${mot.replace(/ /g, '-')}`] = 20 + jour; }
+  nombres['trente et un'] = 31; nombres['trente-et-un'] = 31;
+  const formesJour = Object.keys(nombres).sort((a, b) => b.length - a.length).map(mot => mot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const formesMois = Object.keys(moisNoms).join('|');
+  match = phrase.match(new RegExp(`\\b(?:le\\s+)?(\\d{1,2}|${formesJour})\\s+(?:du\\s+)?(${formesMois})(?:\\s+(\\d{4}))?\\b`));
+  if (match) { const jour = /^\d+$/.test(match[1]) ? +match[1] : nombres[match[1]]; return valider(match[3] ? +match[3] : aujourdHui.getFullYear(), moisNoms[match[2]], jour, !match[3]); }
+  match = phrase.match(/\b(?:pour\s+le|avant\s+le|d ici le|le)\s+(\d{1,2})(?:er)?\b/);
+  if (match) { let mois = aujourdHui.getMonth() + 1, annee = aujourdHui.getFullYear(); let date = new Date(annee, mois - 1, +match[1]); if (date < aujourdHui) { mois++; if (mois > 12) { mois = 1; annee++; } } return valider(annee, mois, +match[1], false); }
+  return null;
+}
+async function utiliserDictée() {
+  if (reconnaissanceEnCours || enregistreurAudio?.state === 'recording') terminerVocal();
+  await finalisationAudio;
+  const texte = trouver('#transcription-vocale').value.trim();
+  if (!texte) return notifier('Dictez d’abord votre demande ou votre tâche.', 1);
+  const joindreAudio = Boolean(trouver('#inclure-audio')?.checked && audioDemandeVocal);
+  const estDemande = estClient(), formulaireId = estDemande ? 'formulaire-demande' : 'formulaire-tache';
+  fermerModale();
+  if (estDemande) formulaireDemande(); else formulaireTache();
+  const formulaire = trouver(`#${formulaireId}`);
+  if (!formulaire) return;
+  const optionAudio = formulaire.querySelector('[name="joindre_audio"]');
+  if (optionAudio) optionAudio.checked = joindreAudio;
+  const champs = [...formulaire.querySelectorAll('input,textarea,select')];
+  const champTitre = champs.find(champ => champ.name === 'titre');
+  // Les virgules séparent titre, pôle, personne assignée et échéance. La phrase libre reste un titre si aucun repère n’est donné.
+  const morceaux = texte.split(/[,;.]/).map(partie => partie.trim()).filter(Boolean);
+  let titre = (estDemande ? texte.split(/[.!?]/)[0] : morceaux.shift()) || texte;
+  titre = titre.replace(/^(?:(?:bonjour|bonsoir|salut)[,!.\s]+)?(?:cr[eé]e?r?\s+(?:une?\s+)?(?:t[aâ]che|demande)\s*[:,-]?\s*)?/i, '').trim() || texte;
+  if (estDemande && /^(?:c[' ]est\s+)?(?:tr[eè]s\s+)?(?:urgent(?:e)?|prioritaire|une urgence)[.!\s]*$/i.test(titre)) titre = texte.split(/[.!?]/).map(partie => partie.trim()).find((partie, indice) => indice > 0 && partie) || titre;
+  if (estDemande) titre = titre.replace(/^(?:(?:c[' ]est\s+)?(?:tr[eè]s\s+)?(?:urgent(?:e)?|prioritaire|une urgence)[,;:.\s-]*)/i, '').trim() || titre;
+  if (estDemande) titre = Array.from(titre).slice(0, 140).join('').trim();
+  let poleMention = '', personneMention = '';
+  for (const morceau of morceaux) {
+    let correspondance;
+    if ((correspondance = morceau.match(/^(?:dans\s+)?(?:le\s+)?p[oô]le\s+(.+)$/i))) poleMention = correspondance[1];
+    else if ((correspondance = morceau.match(/^(?:assign[eé]e?\s+[aà]|pour)\s+(.+)$/i))) personneMention = correspondance[1];
+  }
+  champTitre.value = titre;
+  if (estDemande) {
+    const description = champs.find(champ => champ.name === 'description');
+    if (description) description.value = texte;
+  }
+  if (poleMention) {
+    const selectPole = champs.find(champ => champ.name === (estDemande ? 'pole_id' : 'pole_id'));
+    const pole = ETAT.poles.find(item => normaliserVoix(item.nom) === normaliserVoix(poleMention.trim())) || ETAT.poles.find(item => normaliserVoix(item.nom).includes(normaliserVoix(poleMention.trim())));
+    if (pole && selectPole && [...selectPole.options].some(option => option.value === pole.id)) { selectPole.value = pole.id; selectPole.dispatchEvent(new Event('change', { bubbles: true })); }
+  }
+  if (!estDemande && personneMention) {
+    const cible = normaliserVoix(personneMention.trim());
+    const assignee = [...formulaire.querySelectorAll('input[name="assignes"]')].find(input => {
+      const nom = normaliserVoix(input.parentElement.textContent.trim()); return nom.includes(cible) || cible.includes(nom);
+    });
+    if (assignee) assignee.checked = true;
+  }
+  const dateDetectee = dateVoixVersIso(texte);
+  const champEcheance = champs.find(champ => champ.name === (estDemande ? 'echeance_souhaitee' : 'echeance'));
+  if (dateDetectee && champEcheance) champEcheance.value = dateDetectee;
+  const prioriteDetectee = prioriteVoix(texte);
+  const champPriorite = champs.find(champ => champ.name === (estDemande ? 'urgence' : 'priorite'));
+  if (prioriteDetectee && champPriorite) champPriorite.value = prioriteDetectee;
+  notifier('Dictée ajoutée au formulaire : vérifiez les champs avant de valider.');
+}
 
 /* ---------- Démarrage ---------- */
 function initialiser() {
@@ -249,9 +408,11 @@ function afficher() {
   const entreesNav = estClient() ? [['demandes', 'Mes demandes']] : [['accueil', 'Accueil'], ['taches', 'Tâches'], ['tableau', 'Tableau'], ['agenda', 'Agenda'], ['poles', 'Pôles'], ...(gereDemandes() ? [['demandes', 'Demandes']] : []), ...(estAdmin() ? [['equipe', 'Équipe']] : [])];
   if (!entreesNav.some(nom => nom[0] === ETAT.vue)) ETAT.vue = entreesNav[0][0];
   const moi = ETAT.moi;
+  const boutonVocal = estClient() ? Boolean(ETAT.clients.length) : Boolean(polesGeres().length);
+  const etiquetteVocale = estClient() ? 'Demande par vocal' : 'Tâche par vocal';
   trouver('#application').innerHTML = `<aside><div class="logo">3xCom</div><nav>${entreesNav.map(([cle, libelle]) => `<button class="menu ${ETAT.vue === cle ? 'actif' : ''}" data-action="navigation" data-vue="${cle}">${icone(cle)}${libelle}</button>`).join('')}</nav>
-  <div class="moi"><div><b>${echapper(nomDe(moi))}</b>${ROLES[moi.role]}</div>${boutonInstaller('bouton clair cta-large', 'Installer 3xCom')}<button data-action="deconnexion">Se déconnecter</button></div></aside>
-  <div class="coque"><header class="barre-haute"><div class="logo">3xCom</div><div class="barre-actions">${boutonInstaller('cta-mini', 'Installer')}<button data-action="deconnexion">Quitter</button></div></header>
+  <div class="moi"><div><b>${echapper(nomDe(moi))}</b>${ROLES[moi.role]}</div>${boutonVocal ? `<button class="bouton bouton-vocal-lateral" data-action="saisie-vocale">🎙️ ${etiquetteVocale}</button>` : ''}${boutonInstaller('bouton clair cta-large', 'Installer 3xCom')}<button data-action="deconnexion">Se déconnecter</button></div></aside>
+  <div class="coque"><header class="barre-haute"><div class="logo">3xCom</div><div class="barre-actions">${boutonVocal ? `<button class="cta-mini bouton-vocal-haut" data-action="saisie-vocale" aria-label="${etiquetteVocale}">🎙️ <span>${etiquetteVocale}</span></button>` : ''}${boutonInstaller('cta-mini', 'Installer')}<button data-action="deconnexion">Quitter</button></div></header>
   <main${entreesNav.length > 1 ? '' : ' class="sans-barre"'}>${vues[ETAT.vue]()}</main>
   ${entreesNav.length > 1 ? `<nav class="barre-basse">${entreesNav.map(([cle, libelle]) => `<button class="onglet ${ETAT.vue === cle ? 'actif' : ''}" data-action="navigation" data-vue="${cle}">${icone(cle)}${libelle.split(' ')[0]}</button>`).join('')}</nav>` : ''}</div>`;
 }
@@ -630,7 +791,7 @@ const ligneDemande = demande => {
   <span class="tache-echeance">${demande.echeance_souhaitee ? 'Souhaitée : ' + formaterDate(demande.echeance_souhaitee) : 'Sans échéance'}</span></button>`;
 };
 function vueDemandesClient() {
-  const action = ETAT.clients.length && polesOuverts().length ? '<button class="bouton" data-action="nouvelle_demande">Nouvelle demande</button>' : '';
+  const action = ETAT.clients.length ? '<button class="bouton" data-action="nouvelle_demande">Nouvelle demande</button>' : '';
   let corps;
   if (!ETAT.clients.length) corps = '<div class="vide">Votre compte n’est pas encore rattaché à un groupe client. Contactez 3xCom pour finaliser votre accès.</div>';
   else if (!ETAT.demandes.length) corps = `<div class="vide">Vous n’avez fait aucune demande pour le moment.${action ? '<button class="bouton" data-action="nouvelle_demande">Faire une demande</button>' : ''}</div>`;
@@ -652,35 +813,70 @@ function formulaireDemande() {
   const poles = polesOuverts(),
     groupes = ETAT.clients;
   if (!groupes.length) return notifier('Aucun groupe client n’est disponible.', 1);
-  if (!poles.length) return notifier('Aucun pôle n’accepte de demandes pour le moment.', 1);
+  if (!estClient() && !poles.length) return notifier('Aucun pôle n’accepte de demandes pour le moment.', 1);
   const premier = poles[0],
-    modele = echapper(premier.modele_demande || '');
+    modele = echapper(estClient() ? '' : premier?.modele_demande || '');
   ouvrirModale(`<form class="formulaire-modale" id="formulaire-demande"><h2>Nouvelle demande</h2><p class="discret">Décrivez l’intervention souhaitée : l’agence vous répond directement ici.</p>
   ${groupes.length > 1 || estAdmin() ? `<label for="champ-client">Client</label><select id="champ-client" name="client_id">${groupes.map(client => `<option value="${client.id}">${echapper(client.nom)}</option>`).join('')}</select>` : `<input type="hidden" name="client_id" value="${groupes[0].id}">`}
-  <label for="champ-pole-demande">Pôle concerné</label><select id="champ-pole-demande" name="pole_id">${poles.map(pole => `<option value="${pole.id}">${echapper(pole.nom)}</option>`).join('')}</select><small class="discret aide-champ" id="aide-pole">${echapper(premier.description)}</small>
+  ${estClient() ? '<p class="discret aide-champ">Pas besoin de choisir une équipe : 3xCom orientera votre demande.</p>' : `<label for="champ-pole-demande">Pôle concerné</label><select id="champ-pole-demande" name="pole_id">${poles.map(pole => `<option value="${pole.id}">${echapper(pole.nom)}</option>`).join('')}</select><small class="discret aide-champ" id="aide-pole">${echapper(premier.description)}</small>`}
   <label for="champ-titre-demande">Objet de la demande</label><input id="champ-titre-demande" name="titre" required maxlength="140">
   <label for="champ-description-demande">Description</label><textarea id="champ-description-demande" name="description" rows="6" data-modele="${modele}">${modele}</textarea>
+  ${audioDemandeVocal ? '<label class="option-audio"><input type="checkbox" name="joindre_audio" checked> Joindre aussi l’enregistrement audio</label>' : ''}
   <div class="grille2"><div><label for="champ-urgence">Urgence</label><select id="champ-urgence" name="urgence">${Object.entries(PRIORITES).map(([cle, libelle]) => `<option value="${cle}" ${cle === 'normale' ? 'selected' : ''}>${libelle}</option>`).join('')}</select></div>
   <div><label for="champ-echeance-demande">Date souhaitée</label><input id="champ-echeance-demande" type="date" name="echeance_souhaitee" min="${aujourdhui()}"></div></div>
-  <div class="actions"><button type="button" class="bouton fantome" data-action="fermer">Annuler</button><button class="bouton">Envoyer la demande</button></div></form>`);
+  <div class="actions"><button type="button" class="bouton fantome" data-action="fermer">Annuler</button><button type="submit" class="bouton">Envoyer la demande</button></div><p id="erreur-demande" class="erreur" role="alert"></p></form>`);
+}
+function expliquerErreurDemande(erreur) {
+  const detail = String(erreur?.message || erreur || ''), bas = detail.toLocaleLowerCase('fr-FR');
+  let message = detail || 'La demande n’a pas pu être envoyée. Vérifiez votre connexion et réessayez.';
+  if (bas.startsWith('audio:')) message = estClient() ? 'L’enregistrement audio n’a pas pu être joint. Décochez l’option audio et réessayez, ou contactez 3xCom.' : 'Vérifiez la configuration du stockage privé des audios de demandes.';
+  else if (/pole_id/.test(bas) && (erreur?.code === '23502' || /not.null|null value/.test(bas))) message = estClient() ? 'Le service de demandes doit être mis à jour. Votre demande n’a pas été envoyée; contactez 3xCom ou réessayez plus tard.' : 'La base doit être mise à jour pour accepter les demandes sans pôle : exécutez supabase/migration_audio_demandes.sql.';
+  else if (/audio_path|bucket not found/.test(bas) && (/column|schema cache|does not exist|could not find|bucket not found/.test(bas))) message = estClient() ? 'L’enregistrement audio n’a pas pu être joint. Décochez l’option audio et réessayez, ou contactez 3xCom.' : 'La base doit être mise à jour pour joindre un audio : exécutez supabase/migration_audio_demandes.sql.';
+  else if (/row.level security|permission denied|not authorized/.test(bas)) message = estClient() ? 'Votre compte n’est pas autorisé à envoyer cette demande. Contactez votre interlocuteur 3xCom.' : 'L’accès à la demande a été refusé par les règles de sécurité.';
+  else if (estClient()) message = 'Impossible d’envoyer la demande. Vérifiez votre connexion, puis réessayez. Si le problème continue, contactez 3xCom.';
+  const zone = trouver('#erreur-demande');
+  if (zone) zone.textContent = message;
+  notifier(message, true);
 }
 async function enregistrerDemande(formulaire) {
-  const donnees = Object.fromEntries(new FormData(formulaire)),
-    { error } = await bdd.from('demandes').insert({
+  const donnees = Object.fromEntries(new FormData(formulaire)), bouton = formulaire.querySelector('button[type="submit"]');
+  bouton.disabled = true;
+  let cheminAudio = null;
+  try {
+    if (audioDemandeVocal && donnees.joindre_audio === 'on') {
+      const extension = audioDemandeVocal.type.includes('mp4') ? 'm4a' : audioDemandeVocal.type.includes('ogg') ? 'ogg' : 'webm';
+      cheminAudio = `${ETAT.moi.id}/${crypto.randomUUID()}.${extension}`;
+      const { error: erreurAudio } = await bdd.storage.from('audios-demandes').upload(cheminAudio, audioDemandeVocal, { contentType: audioDemandeVocal.type.split(';')[0], upsert: false });
+      if (erreurAudio) { bouton.disabled = false; return expliquerErreurDemande(`Audio : ${erreurAudio.message}`); }
+    }
+    const nouvelleDemande = {
       client_id: donnees.client_id,
-      pole_id: donnees.pole_id,
+      cree_par: ETAT.moi.id,
+      pole_id: donnees.pole_id || null,
       titre: donnees.titre.trim(),
       description: donnees.description.trim(),
       urgence: donnees.urgence,
       echeance_souhaitee: donnees.echeance_souhaitee || null
-    });
-  if (error) return notifier(error.message, 1);
+    };
+    if (cheminAudio) nouvelleDemande.audio_path = cheminAudio;
+    const { error } = await bdd.from('demandes').insert(nouvelleDemande);
+    if (error) {
+      if (cheminAudio) await bdd.storage.from('audios-demandes').remove([cheminAudio]);
+      bouton.disabled = false;
+      return expliquerErreurDemande(error);
+    }
+  } catch (erreur) {
+    if (cheminAudio) await bdd.storage.from('audios-demandes').remove([cheminAudio]);
+    bouton.disabled = false;
+    return expliquerErreurDemande(erreur);
+  }
+  audioDemandeVocal = null;
   fermerModale();
   await chargerTout();
   afficher();
   notifier('Demande envoyée');
 }
-function ouvrirDemande(id) {
+async function ouvrirDemande(id) {
   const demande = ETAT.demandes.find(element => element.id === id);
   if (!demande) return;
   const pole = poleDe(demande.pole_id),
@@ -689,8 +885,13 @@ function ouvrirDemande(id) {
     lie = Boolean(demande.tache_id),
     suivi = SUIVI_DEMANDE.includes(demande.statut),
     peutTraiter = !estClient() && (estAdmin() || peutGerer(demande.pole_id));
+  let audio = '';
+  if (demande.audio_path) {
+    const { data: fichierAudio } = await bdd.storage.from('audios-demandes').createSignedUrl(demande.audio_path, 3600);
+    if (fichierAudio?.signedUrl) audio = `<label>Enregistrement audio</label><audio class="audio-demande" controls preload="none" src="${echapper(fichierAudio.signedUrl)}">Votre navigateur ne peut pas lire cet enregistrement.</audio>`;
+  }
   const resume = `<h2>${echapper(demande.titre)}</h2><div class="demande-meta"><span class="etiquette ${demande.statut}">${STATUTS_DEMANDE[demande.statut]}</span>${demande.urgence === 'haute' ? '<span class="etiquette haute">Urgence haute</span>' : ''}</div>
-  ${suivi ? `<div class="tache-progression" style="margin-top:14px"><span class="barre"><i style="width:${demande.progression}%"></i></span><small>${demande.progression}%</small></div>` : ''}
+  ${suivi ? `<div class="tache-progression" style="margin-top:14px"><span class="barre"><i style="width:${demande.progression}%"></i></span><small>${demande.progression}%</small></div>` : ''}${audio}
   <dl class="detail">${!estClient() || ETAT.clients.length > 1 ? `<dt>Client</dt><dd>${echapper(client?.nom || '—')}</dd>` : ''}<dt>Pôle</dt><dd>${echapper(pole?.nom || '—')}</dd><dt>Demandée par</dt><dd>${echapper(auteur ? nomDe(auteur) : '—')}, le ${formaterDate(formatIso(new Date(demande.cree_le)))}</dd><dt>Date souhaitée</dt><dd>${demande.echeance_souhaitee ? formaterDate(demande.echeance_souhaitee) : '—'}</dd></dl>
   <label>Description</label><p class="texte-libre">${echapper(demande.description) || 'Aucune description'}</p>`;
   if (estClient()) {
@@ -776,6 +977,14 @@ document.addEventListener('click', async evenement => {
     await bdd.auth.signOut();
   } else if (action === 'installer') {
     installer();
+  } else if (action === 'saisie-vocale') {
+    ouvrirSaisieVocale();
+  } else if (action === 'demarrer-vocal') {
+    demarrerVocal(bouton);
+  } else if (action === 'terminer-vocal') {
+    terminerVocal();
+  } else if (action === 'utiliser-vocal') {
+    utiliserDictée();
   } else if (action === 'nouvelle_tache') formulaireTache(undefined, bouton.dataset.date);else if (action === 'tache') formulaireTache(id);else if (action === 'miennes') {
     ETAT.filtres.miennes = !ETAT.filtres.miennes;
     afficher();
