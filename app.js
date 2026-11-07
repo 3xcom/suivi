@@ -338,10 +338,14 @@ const vues = {
   equipe() {
     return enTete('Équipe', `${ETAT.profils.length} compte${ETAT.profils.length > 1 ? 's' : ''}`) + `<div class="panneau">${ETAT.profils.map(utilisateur => {
       const estMoi = utilisateur.id === ETAT.moi.id,
+        nom = echapper(nomDe(utilisateur)),
         nomsPoles = ETAT.liens.filter(membre => membre.utilisateur_id === utilisateur.id).map(membre => poleDe(membre.pole_id)?.nom).filter(Boolean);
-      return `<div class="ligne" style="flex-wrap:wrap"><span class="avatar">${initiales(nomDe(utilisateur))}</span><div class="extensible"><b>${echapper(nomDe(utilisateur))}</b>${utilisateur.actif ? '' : ' <span class="etiquette haute">En attente</span>'}<div class="discret tronque">${echapper(utilisateur.email)}${nomsPoles.length ? ' · ' + echapper(nomsPoles.join(', ')) : ''}</div></div>
-      <select data-role="${utilisateur.id}" style="width:auto" ${estMoi ? 'disabled' : ''} aria-label="Rôle">${Object.entries(ROLES).map(([cle, libelle]) => `<option value="${cle}" ${utilisateur.role === cle ? 'selected' : ''}>${libelle}</option>`).join('')}</select>
-      <label style="display:flex;gap:8px;align-items:center;margin:0;font-weight:500"><input type="checkbox" data-actif="${utilisateur.id}" ${utilisateur.actif ? 'checked' : ''} ${estMoi ? 'disabled' : ''}>Actif</label></div>`;
+      return `<div class="membre${utilisateur.actif ? '' : ' en-attente'}"><span class="avatar">${initiales(nomDe(utilisateur))}</span>
+      <div class="membre-infos"><div class="membre-nom"><b>${nom}</b>${estMoi ? '<span class="etiquette">Vous</span>' : ''}${utilisateur.actif ? '' : '<span class="etiquette haute">En attente</span>'}</div>
+      <small class="discret membre-email">${echapper(utilisateur.email)}</small>
+      ${nomsPoles.length ? `<div class="membre-poles">${nomsPoles.map(nomPole => `<span class="etiquette">${echapper(nomPole)}</span>`).join('')}</div>` : ''}</div>
+      <div class="membre-actions"><select data-role="${utilisateur.id}" ${estMoi ? 'disabled' : ''} aria-label="Rôle de ${nom}">${Object.entries(ROLES).map(([cle, libelle]) => `<option value="${cle}" ${utilisateur.role === cle ? 'selected' : ''}>${libelle}</option>`).join('')}</select>
+      <label class="interrupteur"><input type="checkbox" role="switch" data-actif="${utilisateur.id}" ${utilisateur.actif ? 'checked' : ''} ${estMoi ? 'disabled' : ''}><span>Actif</span></label></div></div>`;
     }).join('')}</div><p class="discret" style="margin-top:14px">Rattachez les membres à leurs pôles depuis la page Pôles.</p>`;
   }
 };
