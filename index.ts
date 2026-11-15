@@ -1,6 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
-// Fonction Edge « notifier » : envoie les e-mails de Suivi 3xCom via Resend.
+// Fonction Edge « notifier » : envoie à l'administrateur les e-mails importants de Suivi 3xCom, via Resend.
 // Appelée uniquement par la base de données (en-tête x-secret), jamais par le navigateur.
+// Évènements : relecture, nouveau_compte, nouvelle_demande, rappels (et test pour vérifier la configuration).
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
 const bdd = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
@@ -8,16 +9,14 @@ const CLE_RESEND = Deno.env.get('RESEND_API_KEY') ?? '';
 const EXPEDITEUR = Deno.env.get('MAIL_FROM') ?? Deno.env.get('RESEND_FROM') ?? '3xCom <onboarding@resend.dev>';
 const SECRET = Deno.env.get('WEBHOOK_SECRET') ?? Deno.env.get('NOTIF_SECRET') ?? '';
 const URL_APP = Deno.env.get('SITE_URL') ?? Deno.env.get('APP_URL') ?? '';
+// Sans domaine vérifié, Resend n'envoie qu'à l'adresse du compte Resend : c'est l'adresse de l'administrateur.
 const ADMIN_EMAIL = Deno.env.get('ADMIN_EMAIL') ?? '';
 
-// Sans domaine vérifié, Resend n'accepte d'envoyer qu'à l'adresse du compte Resend.
-// Dans ce cas, tous les e-mails sont redirigés vers ADMIN_EMAIL (le destinataire prévu apparaît dans l'objet).
-const MODE_SANS_DOMAINE = EXPEDITEUR.includes('@resend.dev');
-
-type Message = { to: string; subject: string; html: string };
+type Message = { subject: string; html: string };
 
 const echapper = (texte: unknown) => String(texte ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const dateFr = (date: string | null) => date ? new Date(date + 'T00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) : 'sans échéance';
+const URGENCES: Record<string, string> = { basse: 'Basse', normale: 'Normale', haute: 'Haute' };
 
 function gabarit(titre: string, paragraphes: string[]): string {
   return `<div style="font-family:Arial,sans-serif;background:#F2F3F6;padding:24px"><div style="max-width:520px;margin:auto;background:#fff;border-radius:14px;overflow:hidden">
@@ -28,120 +27,125 @@ function gabarit(titre: string, paragraphes: string[]): string {
   </div></div></div>`;
 }
 
-// Profils actifs qui ont accepté les e-mails
-async function destinataires(ids: string[]): Promise<any[]> {
-  if (!ids.length) return [];
-  const { data } = await bdd.from('profils').select('id, nom_complet, email').in('id', ids).eq('actif', true).eq('notifications_email', true);
-  return data ?? [];
-}
-async function tache(id: string): Promise<any> {
-  const { data } = await bdd.from('taches').select('id, titre, description, echeance, pole_id').eq('id', id).single();
+// Petits accès à la base (clé de service : aucune règle d'accès ne s'applique ici)
+async function un(table: string, colonnes: string, id: string | null | undefined): Promise<any> {
+  if (!id) return null;
+  const { data } = await bdd.from(table).select(colonnes).eq('id', id).maybeSingle();
   return data;
 }
-async function nomPole(id: string): Promise<string> {
-  const { data } = await bdd.from('poles').select('nom').eq('id', id).single();
-  return data?.nom ?? '';
-}
-async function idsAdmins(): Promise<string[]> {
-  const { data } = await bdd.from('profils').select('id').eq('role', 'admin').eq('actif', true);
-  return (data ?? []).map((p: any) => p.id);
-}
-
-async function assignation(e: any): Promise<Message[]> {
-  const t = await tache(e.tache_id);
-  if (!t || e.par === e.utilisateur_id) return []; // inutile de prévenir quelqu'un de sa propre action
-  const pole = await nomPole(t.pole_id);
-  return (await destinataires([e.utilisateur_id])).map((u) => ({
-    to: u.email,
-    subject: `Nouvelle tâche : ${t.titre}`,
-    html: gabarit('Une tâche vous a été assignée', [`<b>${echapper(t.titre)}</b>`, `Pôle : ${echapper(pole)}<br>Échéance : ${echapper(dateFr(t.echeance))}`, ...(t.description ? [echapper(t.description)] : [])]),
-  }));
-}
-
-async function relecture(e: any): Promise<Message[]> {
-  const t = await tache(e.tache_id);
-  if (!t) return [];
-  const { data: liens } = await bdd.from('membres_pole').select('utilisateur_id').eq('pole_id', t.pole_id);
-  const idsPole = (liens ?? []).map((l: any) => l.utilisateur_id);
-  let responsables: string[] = [];
-  if (idsPole.length) {
-    const { data } = await bdd.from('profils').select('id').eq('role', 'responsable').in('id', idsPole);
-    responsables = (data ?? []).map((p: any) => p.id);
+const nomDe = (profil: any) => profil ? (profil.nom_complet || profil.email) : 'quelqu’un';
+async function nomsAssignes(idsTaches: string[]): Promise<Record<string, string[]>> {
+  const resultat: Record<string, string[]> = {};
+  if (!idsTaches.length) return resultat;
+  const { data: liens } = await bdd.from('assignations').select('tache_id, utilisateur_id').in('tache_id', idsTaches);
+  const idsPersonnes = [...new Set((liens ?? []).map((l: any) => l.utilisateur_id))];
+  const { data: profils } = idsPersonnes.length ? await bdd.from('profils').select('id, nom_complet, email').in('id', idsPersonnes) : { data: [] };
+  for (const lien of liens ?? []) {
+    const profil = (profils ?? []).find((p: any) => p.id === lien.utilisateur_id);
+    (resultat[lien.tache_id] ??= []).push(nomDe(profil));
   }
-  const ids = [...new Set([...(await idsAdmins()), ...responsables])].filter((id) => id !== e.par);
-  const pole = await nomPole(t.pole_id);
-  return (await destinataires(ids)).map((u) => ({
-    to: u.email,
-    subject: `À relire : ${t.titre}`,
-    html: gabarit('Une tâche attend votre relecture', [`<b>${echapper(t.titre)}</b>`, `Pôle : ${echapper(pole)}`]),
-  }));
+  return resultat;
 }
 
+// Une tâche passe « en relecture »
+async function relecture(e: any): Promise<Message[]> {
+  const tache = await un('taches', 'id, titre, pole_id', e.tache_id);
+  if (!tache) return [];
+  const auteur = await un('profils', 'nom_complet, email', e.par);
+  if (auteur?.email && auteur.email === ADMIN_EMAIL) return []; // l'administrateur vient de le faire lui-même
+  const pole = await un('poles', 'nom', tache.pole_id);
+  const assignes = (await nomsAssignes([tache.id]))[tache.id] ?? [];
+  return [{
+    subject: `À relire : ${tache.titre}`,
+    html: gabarit('Une tâche attend votre relecture', [
+      `<b>${echapper(tache.titre)}</b>`,
+      `Pôle : ${echapper(pole?.nom ?? '')}<br>Assignée à : ${echapper(assignes.join(', ') || 'personne')}${auteur ? `<br>Passée en relecture par : ${echapper(nomDe(auteur))}` : ''}`,
+    ]),
+  }];
+}
+
+// Un compte (membre ou client) vient d'être créé et attend votre validation
 async function nouveauCompte(e: any): Promise<Message[]> {
-  const { data: nouveau } = await bdd.from('profils').select('nom_complet, email').eq('id', e.utilisateur_id).single();
+  const nouveau = await un('profils', 'nom_complet, email, role', e.utilisateur_id);
   if (!nouveau) return [];
-  return (await destinataires(await idsAdmins())).map((u) => ({
-    to: u.email,
-    subject: 'Nouvelle demande d’accès à 3xCom',
-    html: gabarit('Nouvelle demande d’accès', [`<b>${echapper(nouveau.nom_complet || nouveau.email)}</b> (${echapper(nouveau.email)}) a créé un compte et attend votre validation.`, 'Rendez-vous dans l’onglet Équipe pour l’activer et choisir son rôle.']),
-  }));
+  const estClient = nouveau.role === 'client';
+  let groupe = '';
+  if (estClient) {
+    const { data: liens } = await bdd.from('membres_client').select('client_id').eq('utilisateur_id', e.utilisateur_id);
+    const noms = [];
+    for (const lien of liens ?? []) noms.push((await un('clients', 'nom', lien.client_id))?.nom);
+    groupe = noms.filter(Boolean).join(', ');
+  }
+  return [{
+    subject: `Nouvelle demande d’accès à 3xCom${estClient ? ' (client)' : ''}`,
+    html: gabarit('Nouvelle demande d’accès', [
+      `<b>${echapper(nouveau.nom_complet || nouveau.email)}</b> (${echapper(nouveau.email)}) a créé un compte ${estClient ? 'client' : 'membre'} et attend votre validation.`,
+      estClient ? (groupe ? `Il s’est rattaché au groupe « ${echapper(groupe)} » : vérifiez que c’est bien lui avant de l’activer dans Équipe.` : 'Il n’a choisi aucun groupe : activez-le dans Équipe, puis rattachez-le à son groupe dans l’onglet Clients.') : 'Rendez-vous dans l’onglet Équipe pour l’activer et choisir son rôle.',
+    ]),
+  }];
 }
 
-async function compteActive(e: any): Promise<Message[]> {
-  return (await destinataires([e.utilisateur_id])).map((u) => ({
-    to: u.email,
-    subject: 'Votre accès à 3xCom est activé',
-    html: gabarit('Bienvenue sur 3xCom', ['Votre compte a été validé : vous pouvez maintenant vous connecter et consulter vos tâches.']),
-  }));
+// Un client envoie une demande d'intervention
+async function nouvelleDemande(e: any): Promise<Message[]> {
+  const demande = await un('demandes', 'id, titre, description, urgence, echeance_souhaitee, client_id, pole_id, cree_par', e.demande_id);
+  if (!demande) return [];
+  const [client, pole, auteur] = await Promise.all([
+    un('clients', 'nom', demande.client_id), un('poles', 'nom', demande.pole_id), un('profils', 'nom_complet, email', demande.cree_par),
+  ]);
+  const extrait = demande.description ? String(demande.description).slice(0, 600) : '';
+  return [{
+    subject: `Nouvelle demande de ${client?.nom ?? 'un client'} : ${demande.titre}`,
+    html: gabarit('Nouvelle demande d’intervention', [
+      `<b>${echapper(demande.titre)}</b>`,
+      `Client : ${echapper(client?.nom ?? '—')}${auteur ? ` (${echapper(nomDe(auteur))})` : ''}<br>Pôle demandé : ${echapper(pole?.nom ?? '—')}<br>Urgence : ${echapper(URGENCES[demande.urgence] ?? demande.urgence)}<br>Date souhaitée : ${echapper(dateFr(demande.echeance_souhaitee))}`,
+      ...(extrait ? [echapper(extrait).replace(/\n/g, '<br>')] : []),
+      'Ouvrez l’onglet Demandes pour la traiter.',
+    ]),
+  }];
 }
 
+// Récapitulatif quotidien : retards, échéances du jour et du lendemain, demandes en attente
 async function rappels(): Promise<Message[]> {
   const aujourdhui = new Date().toISOString().slice(0, 10);
   const demain = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
-  const { data: taches } = await bdd.from('taches').select('id, titre, echeance').neq('statut', 'terminee').not('echeance', 'is', null).lte('echeance', demain);
-  if (!taches?.length) return [];
-  const { data: liens } = await bdd.from('assignations').select('tache_id, utilisateur_id').in('tache_id', taches.map((t: any) => t.id));
-  const parPersonne: Record<string, { retard: any[]; proches: any[] }> = {};
-  for (const lien of liens ?? []) {
-    const t = taches.find((x: any) => x.id === lien.tache_id);
-    const groupe = (parPersonne[lien.utilisateur_id] ??= { retard: [], proches: [] });
-    (t.echeance < aujourdhui ? groupe.retard : groupe.proches).push(t);
-  }
-  const liste = (titre: string, ts: any[]) => ts.length ? `<b>${titre}</b><br>${ts.map((t) => `• ${echapper(t.titre)} (${echapper(dateFr(t.echeance))})`).join('<br>')}` : '';
-  return (await destinataires(Object.keys(parPersonne))).map((u) => {
-    const g = parPersonne[u.id];
-    return {
-      to: u.email,
-      subject: g.retard.length ? `${g.retard.length} tâche(s) en retard` : 'Tâches à rendre bientôt',
-      html: gabarit('Vos échéances', [liste('En retard', g.retard), liste('Aujourd’hui et demain', g.proches)].filter(Boolean)),
-    };
-  });
+  const { data: taches } = await bdd.from('taches').select('id, titre, echeance').neq('statut', 'terminee').not('echeance', 'is', null).lte('echeance', demain).order('echeance');
+  const { data: demandes } = await bdd.from('demandes').select('titre').eq('statut', 'nouvelle');
+  const liste = taches ?? [];
+  if (!liste.length && !(demandes ?? []).length) return [];
+  const assignes = await nomsAssignes(liste.map((t: any) => t.id));
+  const ligne = (t: any) => `• ${echapper(t.titre)} (${echapper(dateFr(t.echeance))}) — ${echapper((assignes[t.id] ?? []).join(', ') || 'non assignée')}`;
+  const retard = liste.filter((t: any) => t.echeance < aujourdhui), proches = liste.filter((t: any) => t.echeance >= aujourdhui);
+  const section = (titre: string, lignes: string[]) => lignes.length ? `<b>${titre}</b><br>${lignes.join('<br>')}` : '';
+  const sujet = retard.length ? `${retard.length} tâche(s) en retard` : (demandes ?? []).length ? `${(demandes ?? []).length} demande(s) à traiter` : 'Échéances du jour';
+  return [{
+    subject: `Récapitulatif 3xCom : ${sujet}`,
+    html: gabarit('Récapitulatif du jour', [
+      section('En retard', retard.map(ligne)),
+      section('Aujourd’hui et demain', proches.map(ligne)),
+      section('Demandes à traiter', (demandes ?? []).map((d: any) => `• ${echapper(d.titre)}`)),
+    ].filter(Boolean)),
+  }];
 }
 
 // Pour vérifier la configuration : { "type": "test" }
 async function test(): Promise<Message[]> {
-  return [{ to: ADMIN_EMAIL, subject: 'Test des notifications 3xCom', html: gabarit('Test réussi', ['Les e-mails de Suivi 3xCom fonctionnent.']) }];
+  return [{ subject: 'Test des notifications 3xCom', html: gabarit('Test réussi', ['Les e-mails de Suivi 3xCom fonctionnent.']) }];
 }
 
 async function envoyer(messages: Message[]) {
-  if (MODE_SANS_DOMAINE) {
-    if (!ADMIN_EMAIL) throw new Error('ADMIN_EMAIL manquant : obligatoire tant qu’aucun domaine n’est vérifié sur Resend');
-    messages = messages.map((m) => ({ ...m, to: ADMIN_EMAIL, subject: `[pour ${m.to}] ${m.subject}` }));
-  }
-  if (!messages.length) return { envoyes: 0 }; // rien à envoyer : on évite un appel Resend avec une liste vide
-  for (let i = 0; i < messages.length; i += 100) { // Resend : 100 e-mails par lot
-    const reponse = await fetch('https://api.resend.com/emails/batch', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${CLE_RESEND}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(messages.slice(i, i + 100).map((m) => ({ from: EXPEDITEUR, to: [m.to], subject: m.subject, html: m.html }))),
-    });
-    if (!reponse.ok) throw new Error(`Resend ${reponse.status} : ${await reponse.text()}`);
-  }
+  if (!messages.length) return { envoyes: 0 }; // rien à envoyer : on évite un appel Resend inutile
+  if (!ADMIN_EMAIL) throw new Error('ADMIN_EMAIL manquant : adresse de l’administrateur (celle du compte Resend)');
+  const reponse = await fetch('https://api.resend.com/emails/batch', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${CLE_RESEND}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(messages.map((m) => ({ from: EXPEDITEUR, to: [ADMIN_EMAIL], subject: m.subject, html: m.html }))),
+  });
+  if (!reponse.ok) throw new Error(`Resend ${reponse.status} : ${await reponse.text()}`);
   return { envoyes: messages.length };
 }
 
 const GESTIONNAIRES: Record<string, (e: any) => Promise<Message[]>> = {
-  assignation, relecture, nouveau_compte: nouveauCompte, compte_active: compteActive, rappels, test,
+  relecture, nouveau_compte: nouveauCompte, nouvelle_demande: nouvelleDemande, rappels, test,
 };
 
 Deno.serve(async (requete) => {
