@@ -55,6 +55,9 @@ const ICONES = {
 };
 ICONES.tableau = '<rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="13" rx="1"/>';
 ICONES.demandes = '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/>';
+ICONES.plus = '<path d="M12 5v14M5 12h14"/>';
+ICONES.compte = '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>';
+ICONES.micro = '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/>';
 ICONES.agenda = '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>';
 const icone = nom => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONES[nom]}</svg>`;
 const formatIso = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -66,7 +69,7 @@ const formaterDate = date => date ? new Date(date + 'T00:00').toLocaleDateString
 }) : 'Sans échéance';
 const initiales = nom => (nom || '?').split(/\s+/).map(mot => mot[0]).slice(0, 2).join('').toUpperCase();
 const nomDe = utilisateur => utilisateur ? utilisateur.nom_complet || utilisateur.email : 'Non assignée';
-let bdd, invitationInstallation, reconnaissanceEnCours, ecouteVocaleActive = false, idEcouteVocale = 0, redemarragesVocal = 0, enregistreurAudio, fluxAudio, morceauxAudio = [], audioDemandeVocal = null, finalisationAudio = Promise.resolve(), finalisationAudioEnCours = false;
+let bdd, invitationInstallation;
 // --- Installation de l'application (PWA) ---
 const ICONE_INSTALLER = '<svg class="icone-cta" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 20h16"/></svg>';
 const estInstallee = () => ['standalone', 'minimal-ui', 'fullscreen', 'window-controls-overlay'].some(mode => window.matchMedia && window.matchMedia(`(display-mode: ${mode})`).matches) || navigator.standalone === true;
@@ -108,6 +111,8 @@ const ETAT = {
   membresClient: [],
   demandes: [],
   ongletEquipe: 'comptes',
+  groupesPublics: [],
+  filtreClient: 'actives',
   vue: 'accueil',
   filtres: {
     pole: '',
@@ -151,6 +156,7 @@ const estPersonnelCompte = utilisateur => utilisateur.role !== 'client';
 const clientDe = id => ETAT.clients.find(client => client.id === id);
 const groupesDe = idUtilisateur => ETAT.membresClient.filter(lien => lien.utilisateur_id === idUtilisateur).map(lien => clientDe(lien.client_id)).filter(Boolean);
 const polesOuverts = () => ETAT.poles.filter(pole => pole.accepte_demandes !== false);
+const peutDemander = () => ETAT.clients.length > 0 && polesOuverts().length > 0;
 const bandeauDemandes = () => {
   const nombre = gereDemandes() ? ETAT.demandes.filter(demande => demande.statut === 'nouvelle').length : 0;
   return nombre ? `<button class="bandeau" data-action="navigation" data-vue="demandes"><b>${nombre}</b> nouvelle${nombre > 1 ? 's' : ''} demande${nombre > 1 ? 's' : ''} à traiter<span aria-hidden="true">›</span></button>` : '';
@@ -170,165 +176,9 @@ const ouvrirModale = html => {
   trouver('#dialogue').showModal();
 };
 const fermerModale = () => {
-  ecouteVocaleActive = false;
-  idEcouteVocale++;
-  if (reconnaissanceEnCours) { reconnaissanceEnCours.abort(); reconnaissanceEnCours = null; }
-  if (enregistreurAudio?.state === 'recording') enregistreurAudio.stop();
-  fluxAudio?.getTracks().forEach(piste => piste.stop()); fluxAudio = null; enregistreurAudio = null;
+  arreterEcoute();
   if (trouver('#dialogue').open) trouver('#dialogue').close();
 };
-
-/* ---------- Saisie vocale ---------- */
-const reconnaissanceVocale = () => window.SpeechRecognition || window.webkitSpeechRecognition;
-function ouvrirSaisieVocale() {
-  if (!reconnaissanceVocale()) return notifier('La saisie vocale n’est pas disponible dans ce navigateur. Essayez Chrome ou Edge.', 1);
-  audioDemandeVocal = null;
-  const type = estClient() ? 'demande' : 'tache';
-  ouvrirModale(`<div class="formulaire-modale"><h2>${type === 'demande' ? 'Demande par vocal' : 'Tâche par vocal'}</h2><p class="discret">${type === 'demande' ? 'Dites simplement ce dont vous avez besoin. L’agence orientera la demande vers la bonne équipe.' : 'Dictez la tâche, son pôle et les personnes à assigner. Vous pourrez tout vérifier.'}</p><small class="discret">${type === 'demande' ? 'Si vous avez un délai ou si c’est urgent, dites-le : « pour demain », « avant le 15 juin », « c’est urgent ». Touchez « Commencer à parler », expliquez votre besoin, puis « J’ai terminé ».' : 'Exemple : « Visuel campagne de Noël, pôle création, assignée à Aïcha, échéance 15/12/2026, priorité urgente ».'}</small><textarea id="transcription-vocale" rows="5" placeholder="La transcription s’affichera ici. Vous pourrez la corriger." aria-label="Transcription vocale" aria-live="polite"></textarea>${type === 'demande' ? '<label class="option-audio"><input id="inclure-audio" type="checkbox"> Joindre aussi l’enregistrement audio</label>' : ''}<p id="etat-vocal" class="discret" aria-live="polite">Prêt. Touchez « Commencer à parler » lorsque vous êtes prêt.</p><div class="actions actions-vocal"><button type="button" class="bouton fantome" data-action="fermer">Annuler</button><button type="button" class="bouton bouton-vocal" data-action="demarrer-vocal">🎙️ Commencer à parler</button><button type="button" class="bouton fantome" data-action="terminer-vocal" disabled>J’ai terminé</button><button type="button" class="bouton" data-action="utiliser-vocal">Continuer</button></div></div>`);
-}
-async function demarrerVocal(bouton) {
-  const Reconnaissance = reconnaissanceVocale();
-  if (!Reconnaissance) return;
-  const reco = new Reconnaissance();
-  reco.lang = 'fr-FR'; reco.interimResults = true; reco.continuous = true; reco.maxAlternatives = 3;
-  const etat = trouver('#etat-vocal'), champ = trouver('#transcription-vocale'), terminer = trouver('[data-action="terminer-vocal"]');
-  let transcriptionFinale = champ.value;
-  const sessionVocale = ++idEcouteVocale;
-  try {
-    if (trouver('#inclure-audio')?.checked) {
-      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('enregistrement-indisponible');
-      fluxAudio = await navigator.mediaDevices.getUserMedia({ audio: true });
-      morceauxAudio = [];
-      enregistreurAudio = new MediaRecorder(fluxAudio);
-      enregistreurAudio.ondataavailable = evenement => { if (evenement.data.size) morceauxAudio.push(evenement.data); };
-      let terminerAudio; finalisationAudio = new Promise(resolve => { terminerAudio = resolve; });
-      const typeAudio = enregistreurAudio.mimeType || 'audio/webm';
-      enregistreurAudio.onstop = () => { audioDemandeVocal = morceauxAudio.length ? new Blob(morceauxAudio, { type: typeAudio }) : null; fluxAudio?.getTracks().forEach(piste => piste.stop()); fluxAudio = null; finalisationAudioEnCours = false; if (trouver('#etat-vocal')) trouver('#etat-vocal').textContent = audioDemandeVocal ? 'Enregistrement prêt à joindre à la demande.' : 'Aucun audio enregistré.'; const boutonParler = trouver('[data-action="demarrer-vocal"]'); if (boutonParler) boutonParler.disabled = false; terminerAudio(); };
-      enregistreurAudio.start();
-      finalisationAudioEnCours = true;
-    }
-    reco.onresult = evenement => { if (sessionVocale !== idEcouteVocale) return; let provisoire = ''; for (let i = evenement.resultIndex; i < evenement.results.length; i++) { const resultat = evenement.results[i], meilleure = Array.from(resultat).sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0]; if (resultat.isFinal) { transcriptionFinale = `${transcriptionFinale} ${meilleure.transcript}`.trim(); redemarragesVocal = 0; } else provisoire += meilleure.transcript; } champ.value = `${transcriptionFinale}${provisoire ? ' ' + provisoire : ''}`; etat.textContent = provisoire ? 'En écoute… la transcription provisoire peut encore changer.' : 'En écoute… touchez « J’ai terminé » à la fin de votre dictée.'; };
-    reco.onerror = evenement => { if (sessionVocale !== idEcouteVocale || evenement.error === 'no-speech') return; ecouteVocaleActive = false; etat.textContent = evenement.error === 'not-allowed' || evenement.error === 'service-not-allowed' ? 'Micro refusé. Autorisez-le dans votre navigateur, puis recommencez.' : 'La reconnaissance vocale a été interrompue. Touchez « Commencer à parler » pour réessayer.'; terminer.disabled = true; if (enregistreurAudio?.state === 'recording') enregistreurAudio.stop(); else if (!finalisationAudioEnCours) bouton.disabled = false; };
-    reco.onend = () => { if (sessionVocale !== idEcouteVocale) return; if (ecouteVocaleActive && redemarragesVocal < 3) { redemarragesVocal++; etat.textContent = 'Reprise de l’écoute…'; setTimeout(() => { if (!ecouteVocaleActive || sessionVocale !== idEcouteVocale) return; try { reco.start(); reconnaissanceEnCours = reco; } catch { ecouteVocaleActive = false; bouton.disabled = false; terminer.disabled = true; etat.textContent = 'L’écoute s’est arrêtée. Touchez « Commencer à parler » pour reprendre.'; } }, 250); return; } reconnaissanceEnCours = null; ecouteVocaleActive = false; terminer.disabled = true; if (enregistreurAudio?.state === 'recording') enregistreurAudio.stop(); else if (!finalisationAudioEnCours) bouton.disabled = false; };
-    reco.start(); reconnaissanceEnCours = reco; ecouteVocaleActive = true; redemarragesVocal = 0; bouton.disabled = true; terminer.disabled = false; etat.textContent = 'En écoute… touchez « J’ai terminé » à la fin de votre dictée.';
-  } catch (erreur) { if (enregistreurAudio?.state === 'recording') enregistreurAudio.stop(); fluxAudio?.getTracks().forEach(piste => piste.stop()); fluxAudio = null; bouton.disabled = false; terminer.disabled = true; etat.textContent = erreur.message === 'enregistrement-indisponible' ? 'L’enregistrement audio n’est pas pris en charge par ce navigateur.' : 'Le micro ne peut pas démarrer. Vérifiez son autorisation puis réessayez.'; }
-}
-function terminerVocal() {
-  ecouteVocaleActive = false;
-  idEcouteVocale++;
-  if (reconnaissanceEnCours) { const reco = reconnaissanceEnCours; reconnaissanceEnCours = null; reco.stop(); }
-  if (enregistreurAudio?.state === 'recording') enregistreurAudio.stop();
-  const bouton = trouver('[data-action="demarrer-vocal"]'), terminer = trouver('[data-action="terminer-vocal"]');
-  if (bouton && !finalisationAudioEnCours) bouton.disabled = false; if (terminer) terminer.disabled = true;
-  if (!enregistreurAudio) trouver('#etat-vocal').textContent = 'Dictée terminée. Relisez-la, puis continuez.';
-}
-const normaliserVoix = texte => texte.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('fr-FR');
-function prioriteVoix(texte) {
-  const phrase = normaliserVoix(texte).replace(/[’']/g, ' ');
-  if (/\b(pas urgent|pas d urgence|sans urgence|aucune urgence|pas presse)\b/.test(phrase)) return 'normale';
-  if (/\b(quand vous pouvez|quand ce sera possible|pas de delai particulier|priorite basse|priorite faible|faible priorite)\b/.test(phrase)) return 'basse';
-  if (/\b(urgent(?:e)?|urgence|prioritaire|priorite haute|haute priorite|au plus vite|des que possible|immediatement|des maintenant|asap)\b/.test(phrase)) return 'haute';
-  if (/\bpriorite normale\b/.test(phrase)) return 'normale';
-  return '';
-}
-function dateVoixVersIso(texte) {
-  const phrase = normaliserVoix(texte).replace(/[’']/g, ' ');
-  const maintenant = new Date(), aujourdHui = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate());
-  const iso = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-  const valider = (annee, mois, jour, anneeImplicite = false) => {
-    let date = new Date(annee, mois - 1, jour);
-    if (date.getFullYear() !== annee || date.getMonth() !== mois - 1 || date.getDate() !== jour) return null;
-    if (date < aujourdHui && anneeImplicite) { date = new Date(annee + 1, mois - 1, jour); if (date.getMonth() !== mois - 1 || date.getDate() !== jour) return null; }
-    return date >= aujourdHui ? iso(date) : null;
-  };
-  const relative = (jours) => { const date = new Date(aujourdHui); date.setDate(date.getDate() + jours); return iso(date); };
-  if (/\b(apres demain|apres-demain)\b/.test(phrase)) return relative(2);
-  if (/\b(demain)\b/.test(phrase)) return relative(1);
-  if (/\b(aujourd hui|aujourd-hui|ce jour)\b/.test(phrase)) return relative(0);
-  const chiffresRelatifs = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10, onze: 11, douze: 12, treize: 13, quatorze: 14, quinze: 15, seize: 16, 'dix sept': 17, 'dix-huit': 18, 'dix huit': 18, 'dix-neuf': 19, 'dix neuf': 19, vingt: 20 };
-  let match = phrase.match(new RegExp(`\\bdans\\s+(\\d+|${Object.keys(chiffresRelatifs).sort((a,b) => b.length-a.length).join('|')})\\s+(jours?|semaines?)\\b`));
-  if (match) return relative((chiffresRelatifs[match[1]] || +match[1]) * (match[2].startsWith('semaine') ? 7 : 1));
-  if (/\b(fin du mois|fin de ce mois|d ici la fin du mois)\b/.test(phrase)) {
-    let dernier = new Date(aujourdHui.getFullYear(), aujourdHui.getMonth() + 1, 0);
-    if (dernier < aujourdHui) dernier = new Date(aujourdHui.getFullYear(), aujourdHui.getMonth() + 2, 0);
-    return iso(dernier);
-  }
-  const jourSemaine = { dimanche: 0, lundi: 1, mardi: 2, mercredi: 3, jeudi: 4, vendredi: 5, samedi: 6 };
-  match = phrase.match(/\b(?:d ici|avant|pour|le|ce)\s+(dimanche|lundi|mardi|mercredi|jeudi|vendredi|samedi)(?:\s+prochain(?:e)?)?\b/) || phrase.match(/\b(dimanche|lundi|mardi|mercredi|jeudi|vendredi|samedi)\s+prochain(?:e)?\b/);
-  if (match) {
-    const delta = (jourSemaine[match[1]] - aujourdHui.getDay() + 7) % 7;
-    const decalage = delta === 0 || /prochain/.test(match[0]) && delta === 0 ? 7 : delta;
-    return relative(decalage);
-  }
-  match = phrase.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-  if (match) return valider(+match[1], +match[2], +match[3]);
-  match = phrase.match(/\b(?:le\s+|pour\s+le\s+|avant\s+le\s+|d ici le\s+)?(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b/);
-  if (match) { let annee = match[3] ? +match[3] : aujourdHui.getFullYear(); if (annee < 100) annee += 2000; return valider(annee, +match[2], +match[1], !match[3]); }
-  const moisNoms = { janvier: 1, fevrier: 2, mars: 3, avril: 4, mai: 5, juin: 6, juillet: 7, aout: 8, septembre: 9, octobre: 10, novembre: 11, decembre: 12 };
-  const nombres = { premier: 1, '1er': 1, un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10, onze: 11, douze: 12, treize: 13, quatorze: 14, quinze: 15, seize: 16, 'dix sept': 17, 'dix-sept': 17, 'dix huit': 18, 'dix-huit': 18, 'dix neuf': 19, 'dix-neuf': 19, vingt: 20, trente: 30 };
-  for (const [mot, jour] of [['et un', 1], ['et deux', 2], ['et trois', 3], ['et quatre', 4], ['et cinq', 5], ['et six', 6], ['et sept', 7], ['et huit', 8], ['et neuf', 9], ['un', 1], ['deux', 2], ['trois', 3], ['quatre', 4], ['cinq', 5], ['six', 6], ['sept', 7], ['huit', 8], ['neuf', 9]]) { nombres[`vingt ${mot}`] = 20 + jour; nombres[`vingt-${mot.replace(/ /g, '-')}`] = 20 + jour; }
-  nombres['trente et un'] = 31; nombres['trente-et-un'] = 31;
-  const formesJour = Object.keys(nombres).sort((a, b) => b.length - a.length).map(mot => mot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-  const formesMois = Object.keys(moisNoms).join('|');
-  match = phrase.match(new RegExp(`\\b(?:le\\s+)?(\\d{1,2}|${formesJour})\\s+(?:du\\s+)?(${formesMois})(?:\\s+(\\d{4}))?\\b`));
-  if (match) { const jour = /^\d+$/.test(match[1]) ? +match[1] : nombres[match[1]]; return valider(match[3] ? +match[3] : aujourdHui.getFullYear(), moisNoms[match[2]], jour, !match[3]); }
-  match = phrase.match(/\b(?:pour\s+le|avant\s+le|d ici le|le)\s+(\d{1,2})(?:er)?\b/);
-  if (match) { let mois = aujourdHui.getMonth() + 1, annee = aujourdHui.getFullYear(); let date = new Date(annee, mois - 1, +match[1]); if (date < aujourdHui) { mois++; if (mois > 12) { mois = 1; annee++; } } return valider(annee, mois, +match[1], false); }
-  return null;
-}
-async function utiliserDictée() {
-  if (reconnaissanceEnCours || enregistreurAudio?.state === 'recording') terminerVocal();
-  await finalisationAudio;
-  const texte = trouver('#transcription-vocale').value.trim();
-  if (!texte) return notifier('Dictez d’abord votre demande ou votre tâche.', 1);
-  const joindreAudio = Boolean(trouver('#inclure-audio')?.checked && audioDemandeVocal);
-  const estDemande = estClient(), formulaireId = estDemande ? 'formulaire-demande' : 'formulaire-tache';
-  fermerModale();
-  if (estDemande) formulaireDemande(); else formulaireTache();
-  const formulaire = trouver(`#${formulaireId}`);
-  if (!formulaire) return;
-  const optionAudio = formulaire.querySelector('[name="joindre_audio"]');
-  if (optionAudio) optionAudio.checked = joindreAudio;
-  const champs = [...formulaire.querySelectorAll('input,textarea,select')];
-  const champTitre = champs.find(champ => champ.name === 'titre');
-  // Les virgules séparent titre, pôle, personne assignée et échéance. La phrase libre reste un titre si aucun repère n’est donné.
-  const morceaux = texte.split(/[,;.]/).map(partie => partie.trim()).filter(Boolean);
-  let titre = (estDemande ? texte.split(/[.!?]/)[0] : morceaux.shift()) || texte;
-  titre = titre.replace(/^(?:(?:bonjour|bonsoir|salut)[,!.\s]+)?(?:cr[eé]e?r?\s+(?:une?\s+)?(?:t[aâ]che|demande)\s*[:,-]?\s*)?/i, '').trim() || texte;
-  if (estDemande && /^(?:c[' ]est\s+)?(?:tr[eè]s\s+)?(?:urgent(?:e)?|prioritaire|une urgence)[.!\s]*$/i.test(titre)) titre = texte.split(/[.!?]/).map(partie => partie.trim()).find((partie, indice) => indice > 0 && partie) || titre;
-  if (estDemande) titre = titre.replace(/^(?:(?:c[' ]est\s+)?(?:tr[eè]s\s+)?(?:urgent(?:e)?|prioritaire|une urgence)[,;:.\s-]*)/i, '').trim() || titre;
-  if (estDemande) titre = Array.from(titre).slice(0, 140).join('').trim();
-  let poleMention = '', personneMention = '';
-  for (const morceau of morceaux) {
-    let correspondance;
-    if ((correspondance = morceau.match(/^(?:dans\s+)?(?:le\s+)?p[oô]le\s+(.+)$/i))) poleMention = correspondance[1];
-    else if ((correspondance = morceau.match(/^(?:assign[eé]e?\s+[aà]|pour)\s+(.+)$/i))) personneMention = correspondance[1];
-  }
-  champTitre.value = titre;
-  if (estDemande) {
-    const description = champs.find(champ => champ.name === 'description');
-    if (description) description.value = texte;
-  }
-  if (poleMention) {
-    const selectPole = champs.find(champ => champ.name === (estDemande ? 'pole_id' : 'pole_id'));
-    const pole = ETAT.poles.find(item => normaliserVoix(item.nom) === normaliserVoix(poleMention.trim())) || ETAT.poles.find(item => normaliserVoix(item.nom).includes(normaliserVoix(poleMention.trim())));
-    if (pole && selectPole && [...selectPole.options].some(option => option.value === pole.id)) { selectPole.value = pole.id; selectPole.dispatchEvent(new Event('change', { bubbles: true })); }
-  }
-  if (!estDemande && personneMention) {
-    const cible = normaliserVoix(personneMention.trim());
-    const assignee = [...formulaire.querySelectorAll('input[name="assignes"]')].find(input => {
-      const nom = normaliserVoix(input.parentElement.textContent.trim()); return nom.includes(cible) || cible.includes(nom);
-    });
-    if (assignee) assignee.checked = true;
-  }
-  const dateDetectee = dateVoixVersIso(texte);
-  const champEcheance = champs.find(champ => champ.name === (estDemande ? 'echeance_souhaitee' : 'echeance'));
-  if (dateDetectee && champEcheance) champEcheance.value = dateDetectee;
-  const prioriteDetectee = prioriteVoix(texte);
-  const champPriorite = champs.find(champ => champ.name === (estDemande ? 'urgence' : 'priorite'));
-  if (prioriteDetectee && champPriorite) champPriorite.value = prioriteDetectee;
-  notifier('Dictée ajoutée au formulaire : vérifiez les champs avant de valider.');
-}
 
 /* ---------- Démarrage ---------- */
 function initialiser() {
@@ -341,10 +191,20 @@ function initialiser() {
     return;
   }
   bdd = window.supabase.createClient(URL_SUPABASE, CLE_ANON_SUPABASE);
+  chargerGroupesPublics();
   bdd.auth.onAuthStateChange((evenement, session) => {
     if (evenement === 'TOKEN_REFRESHED' || evenement !== 'INITIAL_SESSION' && session?.user?.id === ETAT.utilisateur?.id && session) return;
     setTimeout(() => demarrerSession(session), 0);
   });
+}
+async function chargerGroupesPublics() {
+  try {
+    const { data } = await bdd.rpc('groupes_clients_publics');
+    ETAT.groupesPublics = data || [];
+    if (!ETAT.utilisateur && ETAT.mode === 'inscription' && !trouver('#champ-nom-complet')?.value) vueConnexion();
+  } catch (erreur) {
+    ETAT.groupesPublics = [];
+  }
 }
 async function demarrerSession(session) {
   ETAT.utilisateur = session?.user || null;
@@ -392,10 +252,11 @@ async function recharger() {
 
 /* ---------- Écrans ---------- */
 function vueConnexion() {
-  const estInscription = ETAT.mode === 'inscription';
+  const estInscription = ETAT.mode === 'inscription',
+    blocGroupe = ETAT.groupesPublics.length ? `<div id="bloc-groupe" hidden><label for="champ-groupe">Votre groupe client</label><select id="champ-groupe" name="groupe_id"><option value="">Choisir mon groupe…</option>${ETAT.groupesPublics.map(groupe => `<option value="${groupe.id}">${echapper(groupe.nom)}</option>`).join('')}<option value="autre">Mon groupe n’est pas dans la liste</option></select><small class="discret aide-champ">Vous serez rattaché à ce groupe dès que l’administrateur aura validé votre compte.</small></div>` : '';
   trouver('#application').innerHTML = `<div class="connexion"><section class="connexion-marque"><div class="logo">3xCom</div><p class="serif">L’agence 3xCom, tâche après tâche.</p></section>
   <section class="connexion-formulaire"><form id="formulaire-connexion"><h2>${estInscription ? 'Créer un compte' : 'Connexion'}</h2><p class="discret">${estInscription ? 'Un administrateur validera votre accès.' : 'Retrouvez vos tâches et vos pôles.'}</p>
-  ${estInscription ? '<label for="champ-nom-complet">Nom complet</label><input id="champ-nom-complet" name="nom_complet" required autocomplete="name"><label for="champ-type-compte">Je suis</label><select id="champ-type-compte" name="type_compte"><option value="membre">Membre de l’équipe 3xCom</option><option value="client">Client de 3xCom</option></select>' : ''}
+  ${estInscription ? '<label for="champ-nom-complet">Nom complet</label><input id="champ-nom-complet" name="nom_complet" required autocomplete="name"><label for="champ-type-compte">Je suis</label><select id="champ-type-compte" name="type_compte"><option value="membre">Membre de l’équipe 3xCom</option><option value="client">Client de 3xCom</option></select>' + blocGroupe : ''}
   <label for="champ-email">Adresse e-mail</label><input id="champ-email" name="email" type="email" required autocomplete="email">
   <label for="champ-mot-de-passe">Mot de passe</label><input id="champ-mot-de-passe" name="password" type="password" minlength="6" required autocomplete="${estInscription ? 'new-password' : 'current-password'}">
   <p class="erreur" id="erreur" role="alert"></p><button class="bouton" style="width:100%;justify-content:center">${estInscription ? 'Créer mon compte' : 'Se connecter'}</button>
@@ -405,16 +266,20 @@ function vueAttente(message) {
   trouver('#application').innerHTML = `<div class="centre"><div class="logo" style="color:var(--encre)">3xCom</div><h1>Presque prêt</h1><p class="discret">${echapper(message)}</p><button class="bouton fantome" data-action="deconnexion">Se déconnecter</button>${boutonInstaller()}</div>`;
 }
 function afficher() {
-  const entreesNav = estClient() ? [['demandes', 'Mes demandes']] : [['accueil', 'Accueil'], ['taches', 'Tâches'], ['tableau', 'Tableau'], ['agenda', 'Agenda'], ['poles', 'Pôles'], ...(gereDemandes() ? [['demandes', 'Demandes']] : []), ...(estAdmin() ? [['equipe', 'Équipe']] : [])];
+  const entreesNav = estClient() ? [['demandes', 'Demandes'], ['compte', 'Compte']] : [['accueil', 'Accueil'], ['taches', 'Tâches'], ['tableau', 'Tableau'], ['agenda', 'Agenda'], ['poles', 'Pôles'], ...(gereDemandes() ? [['demandes', 'Demandes']] : []), ...(estAdmin() ? [['equipe', 'Équipe']] : [])];
   if (!entreesNav.some(nom => nom[0] === ETAT.vue)) ETAT.vue = entreesNav[0][0];
-  const moi = ETAT.moi;
-  const boutonVocal = estClient() ? Boolean(ETAT.clients.length) : Boolean(polesGeres().length);
-  const etiquetteVocale = estClient() ? 'Demande par vocal' : 'Tâche par vocal';
+  const moi = ETAT.moi,
+    demandeRapide = estClient() && peutDemander(),
+    onglets = entreesNav.map(([cle, libelle]) => `<button class="onglet ${ETAT.vue === cle ? 'actif' : ''}" data-action="navigation" data-vue="${cle}">${icone(cle)}${libelle.split(' ')[0]}</button>`);
+  if (demandeRapide) onglets.splice(1, 0, `<button class="onglet-plus" data-action="nouvelle_demande" aria-label="Nouvelle demande">${icone('plus')}<span>Demander</span></button>`);
   trouver('#application').innerHTML = `<aside><div class="logo">3xCom</div><nav>${entreesNav.map(([cle, libelle]) => `<button class="menu ${ETAT.vue === cle ? 'actif' : ''}" data-action="navigation" data-vue="${cle}">${icone(cle)}${libelle}</button>`).join('')}</nav>
-  <div class="moi"><div><b>${echapper(nomDe(moi))}</b>${ROLES[moi.role]}</div>${boutonVocal ? `<button class="bouton bouton-vocal-lateral" data-action="saisie-vocale">🎙️ ${etiquetteVocale}</button>` : ''}${boutonInstaller('bouton clair cta-large', 'Installer 3xCom')}<button data-action="deconnexion">Se déconnecter</button></div></aside>
-  <div class="coque"><header class="barre-haute"><div class="logo">3xCom</div><div class="barre-actions">${boutonVocal ? `<button class="cta-mini bouton-vocal-haut" data-action="saisie-vocale" aria-label="${etiquetteVocale}">🎙️ <span>${etiquetteVocale}</span></button>` : ''}${boutonInstaller('cta-mini', 'Installer')}<button data-action="deconnexion">Quitter</button></div></header>
-  <main${entreesNav.length > 1 ? '' : ' class="sans-barre"'}>${vues[ETAT.vue]()}</main>
-  ${entreesNav.length > 1 ? `<nav class="barre-basse">${entreesNav.map(([cle, libelle]) => `<button class="onglet ${ETAT.vue === cle ? 'actif' : ''}" data-action="navigation" data-vue="${cle}">${icone(cle)}${libelle.split(' ')[0]}</button>`).join('')}</nav>` : ''}</div>`;
+  ${demandeRapide ? '<button class="bouton clair cta-large cta-demande" data-action="nouvelle_demande">Nouvelle demande</button>' : ''}
+  <div class="moi"><div><b>${echapper(nomDe(moi))}</b>${ROLES[moi.role]}</div>${boutonInstaller('bouton clair cta-large', 'Installer 3xCom')}<button data-action="deconnexion">Se déconnecter</button></div></aside>
+  <div class="coque"><header class="barre-haute"><div class="logo">3xCom</div><div class="barre-actions">${boutonInstaller('cta-mini', 'Installer')}<button data-action="deconnexion">Quitter</button></div></header>
+  <main>${vues[ETAT.vue]()}</main>
+  <nav class="barre-basse${demandeRapide ? ' avec-plus' : ''}">${onglets.join('')}</nav></div>`;
+  const micro = boutonMicro();
+  if (micro) trouver('#application').insertAdjacentHTML('beforeend', micro);
 }
 const enTete = (titre, sousTitre, action = '') => `<div class="entete"><div><h1>${titre}</h1><p>${sousTitre}</p></div>${action}</div>`;
 const ligneTache = tache => {
@@ -532,6 +397,9 @@ const vues = {
   },
   demandes() {
     return estClient() ? vueDemandesClient() : vueDemandesAgence();
+  },
+  compte() {
+    return vueCompte();
   }
 };
 
@@ -565,13 +433,15 @@ function recalculerProgression() {
     trouver('#valeur-progression').textContent = curseur.value;
   }
 }
-function formulaireTache(id, date) {
+function formulaireTache(id, date, preset = {}) {
   const tache = id ? ETAT.taches.find(element => element.id === id) : {
     statut: 'a_faire',
-    priorite: 'normale',
+    priorite: preset.priorite || 'normale',
     progression: 0,
-    pole_id: polesGeres()[0]?.id,
-    echeance: date
+    pole_id: preset.pole_id || polesGeres()[0]?.id,
+    echeance: preset.echeance || date,
+    titre: preset.titre,
+    description: preset.description
   };
   if (!tache.pole_id) return notifier('Créez d’abord un pôle.', 1);
   const complet = !id || peutGerer(tache.pole_id),
@@ -585,7 +455,7 @@ function formulaireTache(id, date) {
   <div><label for="champ-statut">Statut</label><select id="champ-statut" name="statut" ${champDesactive('statut')}>${Object.entries(STATUTS).map(([cle, libelle]) => `<option value="${cle}" ${tache.statut === cle ? 'selected' : ''}>${libelle}</option>`).join('')}</select></div>
   <div><label for="champ-priorite">Priorité</label><select id="champ-priorite" name="priorite" ${champDesactive('t')}>${Object.entries(PRIORITES).map(([cle, libelle]) => `<option value="${cle}" ${tache.priorite === cle ? 'selected' : ''}>${libelle}</option>`).join('')}</select></div>
   <div><label for="champ-echeance">Échéance</label><input id="champ-echeance" type="date" name="echeance" value="${tache.echeance || ''}" ${champDesactive('t')}></div></div>
-  <label>Assignée à</label><div class="cases" id="champ-assignes">${casesAssignation(tache.pole_id, idsAssignes(tache.id), champDesactive('t'))}</div>
+  <label>Assignée à</label><div class="cases" id="champ-assignes">${casesAssignation(tache.pole_id, id ? idsAssignes(tache.id) : preset.assignes || [], champDesactive('t'))}</div>
   <label>Sous-tâches</label>${blocSousTaches(tache.id, complet, peutAgir)}
   <label for="champ-progression">Progression : <span id="valeur-progression">${tache.progression}</span>%</label><input id="champ-progression" type="range" name="progression" min="0" max="100" step="5" value="${tache.progression}" ${champDesactive('progression') || (id && sousTachesDe(id).length) ? 'disabled' : ''} data-verrou="${champDesactive('progression') ? 1 : 0}">
   <div class="actions">${id && complet ? '<button type="button" class="bouton danger" data-action="supprimer_tache">Supprimer</button>' : ''}<button type="button" class="bouton fantome" data-action="fermer">${peutAgir ? 'Annuler' : 'Fermer'}</button>${peutAgir ? '<button class="bouton">Enregistrer</button>' : ''}</div></form>`);
@@ -665,6 +535,7 @@ function formulairePole(id) {
   <label for="champ-nom-pole">Nom</label><input id="champ-nom-pole" name="nom" required value="${echapper(pole.nom)}"><label for="champ-description-pole">Description</label><textarea id="champ-description-pole" name="description" rows="2">${echapper(pole.description)}</textarea>
   <label class="preference" style="color:var(--encre);font-weight:500"><input type="checkbox" name="accepte_demandes" ${pole.accepte_demandes === false ? '' : 'checked'}>Ce pôle accepte les demandes des clients</label>
   <label for="champ-modele-demande">Modèle de demande</label><textarea id="champ-modele-demande" name="modele_demande" rows="4" placeholder="Texte qui préremplit la description quand le client choisit ce pôle">${echapper(pole.modele_demande)}</textarea><small class="discret aide-champ">Listez les informations que le client doit fournir (supports, format, délai…).</small>
+  <label for="champ-mots-cles">Mots-clés</label><input id="champ-mots-cles" name="mots_cles" value="${echapper(pole.mots_cles)}" placeholder="affiche, logo, flyer, charte graphique"><small class="discret aide-champ">Ils aident à choisir automatiquement ce pôle d’après le texte d’une demande.</small>
   <label>Couleur</label><div class="nuancier">${COULEURS.map(couleur => `<label class="nuance" style="color:${couleur};margin:0"><input type="radio" name="couleur" value="${couleur}" ${couleur === pole.couleur ? 'checked' : ''}><span></span></label>`).join('')}</div>
   <label>Membres</label><div class="cases">${ETAT.profils.filter(utilisateur => utilisateur.actif && estPersonnelCompte(utilisateur)).map(utilisateur => `<label><input type="checkbox" name="membres" value="${utilisateur.id}" ${idsMembres.includes(utilisateur.id) ? 'checked' : ''}>${echapper(nomDe(utilisateur))} <small class="discret">${ROLES[utilisateur.role]}</small></label>`).join('')}</div>
   <div class="actions">${id ? '<button type="button" class="bouton danger" data-action="supprimer_pole">Supprimer</button>' : ''}<button type="button" class="bouton fantome" data-action="fermer">Annuler</button><button class="bouton">Enregistrer</button></div></form>`);
@@ -677,7 +548,8 @@ async function enregistrerPole(formulaire) {
       description: donnees.get('description'),
       couleur: donnees.get('couleur'),
       accepte_demandes: donnees.get('accepte_demandes') === 'on',
-      modele_demande: donnees.get('modele_demande') || ''
+      modele_demande: donnees.get('modele_demande') || '',
+      mots_cles: donnees.get('mots_cles') || ''
     };
   let idPole = id;
   if (id) {
@@ -790,13 +662,50 @@ const ligneDemande = demande => {
   <span class="tache-progression">${suivi ? `<span class="barre"><i style="width:${demande.progression}%"></i></span><small>${demande.progression}%</small>` : ''}</span>
   <span class="tache-echeance">${demande.echeance_souhaitee ? 'Souhaitée : ' + formaterDate(demande.echeance_souhaitee) : 'Sans échéance'}</span></button>`;
 };
+const ETAPES_DEMANDE = [['nouvelle', 'Reçue'], ['en_etude', 'Étude'], ['acceptee', 'Acceptée'], ['en_cours', 'En cours'], ['terminee', 'Terminée']];
+const etapesDemande = demande => {
+  if (demande.statut === 'refusee') return '<p class="demande-refusee">Cette demande n’a pas pu être retenue.</p>';
+  const position = ETAPES_DEMANDE.findIndex(([cle]) => cle === demande.statut);
+  return `<ol class="etapes" aria-label="Avancement de la demande">${ETAPES_DEMANDE.map(([cle, libelle], indice) => `<li class="${demande.statut === 'terminee' || indice < position ? 'faite' : indice === position ? 'courante' : ''}"><span></span>${libelle}</li>`).join('')}</ol>`;
+};
+const carteDemande = demande => {
+  const pole = poleDe(demande.pole_id),
+    client = clientDe(demande.client_id),
+    suivi = SUIVI_DEMANDE.includes(demande.statut),
+    texteEtat = { nouvelle: 'En attente de lecture par l’agence', en_etude: 'L’agence étudie votre demande', refusee: 'Demande non retenue' }[demande.statut],
+    lieu = [ETAT.clients.length > 1 ? client?.nom : '', pole?.nom || 'Pôle à définir', 'reçue le ' + formaterDate(formatIso(new Date(demande.cree_le)))].filter(Boolean).map(echapper).join(' · ');
+  return `<button class="demande-carte" data-action="demande" data-id="${demande.id}" style="--couleur:${pole?.couleur || '#697089'}">
+  <span class="demande-haut"><b>${echapper(demande.titre)}</b><span class="etiquette ${demande.statut}">${STATUTS_DEMANDE[demande.statut]}</span></span>
+  <small class="discret">${lieu}</small>
+  ${suivi ? `<span class="tache-progression"><span class="barre"><i style="width:${demande.progression}%"></i></span><small>${demande.progression}%</small></span>` : `<small class="demande-etat">${texteEtat}</small>`}
+  ${demande.reponse ? '<span class="demande-reponse">Réponse de l’agence</span>' : ''}</button>`;
+};
 function vueDemandesClient() {
-  const action = ETAT.clients.length ? '<button class="bouton" data-action="nouvelle_demande">Nouvelle demande</button>' : '';
+  const demandes = ETAT.demandes,
+    nombre = statuts => demandes.filter(demande => statuts.includes(demande.statut)).length,
+    cloturee = demande => ['terminee', 'refusee'].includes(demande.statut),
+    vue = ETAT.filtreClient,
+    liste = demandes.filter(demande => vue === 'toutes' || (vue === 'actives') === !cloturee(demande)),
+    prenom = (ETAT.moi.nom_complet || '').split(' ')[0],
+    bouton = peutDemander() ? '<button class="bouton" data-action="nouvelle_demande">Faire une demande</button>' : '',
+    basculer = (cle, libelle) => `<button class="bascule ${vue === cle ? 'actif' : ''}" data-action="filtre_client" data-valeur="${cle}">${libelle}</button>`;
   let corps;
-  if (!ETAT.clients.length) corps = '<div class="vide">Votre compte n’est pas encore rattaché à un groupe client. Contactez 3xCom pour finaliser votre accès.</div>';
-  else if (!ETAT.demandes.length) corps = `<div class="vide">Vous n’avez fait aucune demande pour le moment.${action ? '<button class="bouton" data-action="nouvelle_demande">Faire une demande</button>' : ''}</div>`;
-  else corps = ETAT.demandes.map(ligneDemande).join('');
-  return enTete('Mes demandes', ETAT.clients.map(client => echapper(client.nom)).join(', ') || 'Suivi de vos demandes d’intervention', action) + `<div class="panneau">${corps}</div>`;
+  if (!ETAT.clients.length) corps = '<div class="vide">Votre compte n’est pas encore rattaché à un groupe client. L’agence s’en occupe lors de la validation de votre accès.</div>';
+  else if (!demandes.length) corps = `<div class="vide"><b class="serif" style="font-size:24px">Aucune demande pour le moment</b>Décrivez ce dont vous avez besoin, à l’écrit ou à la voix : l’agence vous répond ici.${bouton}</div>`;
+  else if (!liste.length) corps = '<div class="vide">Aucune demande dans cette catégorie.</div>';
+  else corps = `<div class="liste-demandes">${liste.map(carteDemande).join('')}</div>`;
+  return enTete(prenom ? `Bonjour ${echapper(prenom)}` : 'Mes demandes', ETAT.clients.map(client => echapper(client.nom)).join(', ') || 'Suivez vos demandes d’intervention') + (demandes.length ? `<div class="stats-client"><div class="stat-client"><b>${nombre(['nouvelle', 'en_etude'])}</b><span>En attente</span></div><div class="stat-client"><b>${nombre(['acceptee', 'en_cours'])}</b><span>En cours</span></div><div class="stat-client"><b>${nombre(['terminee'])}</b><span>Terminées</span></div></div>
+  <div class="filtres">${basculer('actives', 'En cours')}${basculer('cloturees', 'Clôturées')}${basculer('toutes', 'Toutes')}</div>` : '') + corps;
+}
+function vueCompte() {
+  const moi = ETAT.moi,
+    groupes = groupesDe(moi.id);
+  return enTete('Mon compte', 'Vos informations et votre groupe') + `<div class="panneau"><div class="compte-identite"><span class="avatar grand">${initiales(nomDe(moi))}</span><div><b>${echapper(nomDe(moi))}</b><small class="discret" style="display:block">${echapper(moi.email)}</small></div></div></div>
+  ${groupes.length ? groupes.map(groupe => {
+    const membres = ETAT.membresClient.filter(lien => lien.client_id === groupe.id).map(lien => utilisateurDe(lien.utilisateur_id)).filter(Boolean);
+    return `<div class="panneau" style="margin-top:16px"><h2>${echapper(groupe.nom)}</h2>${groupe.description ? `<p class="discret" style="padding:0 20px 8px">${echapper(groupe.description)}</p>` : ''}${membres.map(utilisateur => `<div class="ligne"><span class="avatar petit">${initiales(nomDe(utilisateur))}</span><span class="extensible">${echapper(nomDe(utilisateur))}</span>${utilisateur.id === moi.id ? '<span class="etiquette">Vous</span>' : ''}</div>`).join('')}</div>`;
+  }).join('') : '<div class="panneau" style="margin-top:16px"><div class="vide">Aucun groupe rattaché pour le moment.</div></div>'}
+  <div class="actions-compte">${boutonInstaller('bouton clair-fonce cta-large', 'Installer l’application')}<button class="bouton fantome cta-large" data-action="deconnexion">Se déconnecter</button></div>`;
 }
 function vueDemandesAgence() {
   const filtres = ETAT.filtres,
@@ -809,74 +718,41 @@ function vueDemandesAgence() {
     <select data-filtre="demandePole" aria-label="Pôle">${options(ETAT.poles.map(pole => [pole.id, pole.nom]), filtres.demandePole, 'Tous les pôles')}</select></div>
     <div class="panneau">${liste.length ? liste.map(ligneDemande).join('') : '<div class="vide">Aucune demande ne correspond.</div>'}</div>`;
 }
-function formulaireDemande() {
+function formulaireDemande(preset = {}) {
   const poles = polesOuverts(),
     groupes = ETAT.clients;
   if (!groupes.length) return notifier('Aucun groupe client n’est disponible.', 1);
-  if (!estClient() && !poles.length) return notifier('Aucun pôle n’accepte de demandes pour le moment.', 1);
-  const premier = poles[0],
-    modele = echapper(estClient() ? '' : premier?.modele_demande || '');
+  if (!poles.length) return notifier('Aucun pôle n’accepte de demandes pour le moment.', 1);
+  const premier = poles.find(pole => pole.id === preset.pole_id) || poles[0],
+    modeleBrut = premier.modele_demande || '',
+    modele = echapper(modeleBrut),
+    initiale = echapper(preset.description ? preset.description + (modeleBrut ? '\n\n' + modeleBrut : '') : modeleBrut);
   ouvrirModale(`<form class="formulaire-modale" id="formulaire-demande"><h2>Nouvelle demande</h2><p class="discret">Décrivez l’intervention souhaitée : l’agence vous répond directement ici.</p>
-  ${groupes.length > 1 || estAdmin() ? `<label for="champ-client">Client</label><select id="champ-client" name="client_id">${groupes.map(client => `<option value="${client.id}">${echapper(client.nom)}</option>`).join('')}</select>` : `<input type="hidden" name="client_id" value="${groupes[0].id}">`}
-  ${estClient() ? '<p class="discret aide-champ">Pas besoin de choisir une équipe : 3xCom orientera votre demande.</p>' : `<label for="champ-pole-demande">Pôle concerné</label><select id="champ-pole-demande" name="pole_id">${poles.map(pole => `<option value="${pole.id}">${echapper(pole.nom)}</option>`).join('')}</select><small class="discret aide-champ" id="aide-pole">${echapper(premier.description)}</small>`}
-  <label for="champ-titre-demande">Objet de la demande</label><input id="champ-titre-demande" name="titre" required maxlength="140">
-  <label for="champ-description-demande">Description</label><textarea id="champ-description-demande" name="description" rows="6" data-modele="${modele}">${modele}</textarea>
-  ${audioDemandeVocal ? '<label class="option-audio"><input type="checkbox" name="joindre_audio" checked> Joindre aussi l’enregistrement audio</label>' : ''}
-  <div class="grille2"><div><label for="champ-urgence">Urgence</label><select id="champ-urgence" name="urgence">${Object.entries(PRIORITES).map(([cle, libelle]) => `<option value="${cle}" ${cle === 'normale' ? 'selected' : ''}>${libelle}</option>`).join('')}</select></div>
-  <div><label for="champ-echeance-demande">Date souhaitée</label><input id="champ-echeance-demande" type="date" name="echeance_souhaitee" min="${aujourdhui()}"></div></div>
-  <div class="actions"><button type="button" class="bouton fantome" data-action="fermer">Annuler</button><button type="submit" class="bouton">Envoyer la demande</button></div><p id="erreur-demande" class="erreur" role="alert"></p></form>`);
-}
-function expliquerErreurDemande(erreur) {
-  const detail = String(erreur?.message || erreur || ''), bas = detail.toLocaleLowerCase('fr-FR');
-  let message = detail || 'La demande n’a pas pu être envoyée. Vérifiez votre connexion et réessayez.';
-  if (bas.startsWith('audio:')) message = estClient() ? 'L’enregistrement audio n’a pas pu être joint. Décochez l’option audio et réessayez, ou contactez 3xCom.' : 'Vérifiez la configuration du stockage privé des audios de demandes.';
-  else if (/pole_id/.test(bas) && (erreur?.code === '23502' || /not.null|null value/.test(bas))) message = estClient() ? 'Le service de demandes doit être mis à jour. Votre demande n’a pas été envoyée; contactez 3xCom ou réessayez plus tard.' : 'La base doit être mise à jour pour accepter les demandes sans pôle : exécutez supabase/migration_audio_demandes.sql.';
-  else if (/audio_path|bucket not found/.test(bas) && (/column|schema cache|does not exist|could not find|bucket not found/.test(bas))) message = estClient() ? 'L’enregistrement audio n’a pas pu être joint. Décochez l’option audio et réessayez, ou contactez 3xCom.' : 'La base doit être mise à jour pour joindre un audio : exécutez supabase/migration_audio_demandes.sql.';
-  else if (/row.level security|permission denied|not authorized/.test(bas)) message = estClient() ? 'Votre compte n’est pas autorisé à envoyer cette demande. Contactez votre interlocuteur 3xCom.' : 'L’accès à la demande a été refusé par les règles de sécurité.';
-  else if (estClient()) message = 'Impossible d’envoyer la demande. Vérifiez votre connexion, puis réessayez. Si le problème continue, contactez 3xCom.';
-  const zone = trouver('#erreur-demande');
-  if (zone) zone.textContent = message;
-  notifier(message, true);
+  ${groupes.length > 1 || estAdmin() ? `<label for="champ-client">Client</label><select id="champ-client" name="client_id">${groupes.map(client => `<option value="${client.id}" ${client.id === preset.client_id ? 'selected' : ''}>${echapper(client.nom)}</option>`).join('')}</select>` : `<input type="hidden" name="client_id" value="${groupes[0].id}">`}
+  <label for="champ-pole-demande">Pôle concerné</label><select id="champ-pole-demande" name="pole_id">${poles.map(pole => `<option value="${pole.id}" ${pole.id === premier.id ? 'selected' : ''}>${echapper(pole.nom)}</option>`).join('')}</select><small class="discret aide-champ" id="aide-pole">${echapper(premier.description)}</small><small class="aide-champ suggestion" id="suggestion-pole" aria-live="polite"></small>
+  <label for="champ-titre-demande">Objet de la demande</label><input id="champ-titre-demande" name="titre" required maxlength="140" value="${echapper(preset.titre)}">
+  <label for="champ-description-demande">Description</label><textarea id="champ-description-demande" name="description" rows="6" data-modele="${modele}">${initiale}</textarea>
+  <div class="grille2"><div><label for="champ-urgence">Urgence</label><select id="champ-urgence" name="urgence">${Object.entries(PRIORITES).map(([cle, libelle]) => `<option value="${cle}" ${cle === (preset.urgence || 'normale') ? 'selected' : ''}>${libelle}</option>`).join('')}</select></div>
+  <div><label for="champ-echeance-demande">Date souhaitée</label><input id="champ-echeance-demande" type="date" name="echeance_souhaitee" min="${aujourdhui()}" value="${preset.echeance_souhaitee || ''}"></div></div>
+  <div class="actions"><button type="button" class="bouton fantome" data-action="fermer">Annuler</button><button class="bouton">Envoyer la demande</button></div></form>`);
 }
 async function enregistrerDemande(formulaire) {
-  const donnees = Object.fromEntries(new FormData(formulaire)), bouton = formulaire.querySelector('button[type="submit"]');
-  bouton.disabled = true;
-  let cheminAudio = null;
-  try {
-    if (audioDemandeVocal && donnees.joindre_audio === 'on') {
-      const extension = audioDemandeVocal.type.includes('mp4') ? 'm4a' : audioDemandeVocal.type.includes('ogg') ? 'ogg' : 'webm';
-      cheminAudio = `${ETAT.moi.id}/${crypto.randomUUID()}.${extension}`;
-      const { error: erreurAudio } = await bdd.storage.from('audios-demandes').upload(cheminAudio, audioDemandeVocal, { contentType: audioDemandeVocal.type.split(';')[0], upsert: false });
-      if (erreurAudio) { bouton.disabled = false; return expliquerErreurDemande(`Audio : ${erreurAudio.message}`); }
-    }
-    const nouvelleDemande = {
+  const donnees = Object.fromEntries(new FormData(formulaire)),
+    { error } = await bdd.from('demandes').insert({
       client_id: donnees.client_id,
-      cree_par: ETAT.moi.id,
-      pole_id: donnees.pole_id || null,
+      pole_id: donnees.pole_id,
       titre: donnees.titre.trim(),
       description: donnees.description.trim(),
       urgence: donnees.urgence,
       echeance_souhaitee: donnees.echeance_souhaitee || null
-    };
-    if (cheminAudio) nouvelleDemande.audio_path = cheminAudio;
-    const { error } = await bdd.from('demandes').insert(nouvelleDemande);
-    if (error) {
-      if (cheminAudio) await bdd.storage.from('audios-demandes').remove([cheminAudio]);
-      bouton.disabled = false;
-      return expliquerErreurDemande(error);
-    }
-  } catch (erreur) {
-    if (cheminAudio) await bdd.storage.from('audios-demandes').remove([cheminAudio]);
-    bouton.disabled = false;
-    return expliquerErreurDemande(erreur);
-  }
-  audioDemandeVocal = null;
+    });
+  if (error) return notifier(error.message, 1);
   fermerModale();
   await chargerTout();
   afficher();
   notifier('Demande envoyée');
 }
-async function ouvrirDemande(id) {
+function ouvrirDemande(id) {
   const demande = ETAT.demandes.find(element => element.id === id);
   if (!demande) return;
   const pole = poleDe(demande.pole_id),
@@ -885,13 +761,9 @@ async function ouvrirDemande(id) {
     lie = Boolean(demande.tache_id),
     suivi = SUIVI_DEMANDE.includes(demande.statut),
     peutTraiter = !estClient() && (estAdmin() || peutGerer(demande.pole_id));
-  let audio = '';
-  if (demande.audio_path) {
-    const { data: fichierAudio } = await bdd.storage.from('audios-demandes').createSignedUrl(demande.audio_path, 3600);
-    if (fichierAudio?.signedUrl) audio = `<label>Enregistrement audio</label><audio class="audio-demande" controls preload="none" src="${echapper(fichierAudio.signedUrl)}">Votre navigateur ne peut pas lire cet enregistrement.</audio>`;
-  }
   const resume = `<h2>${echapper(demande.titre)}</h2><div class="demande-meta"><span class="etiquette ${demande.statut}">${STATUTS_DEMANDE[demande.statut]}</span>${demande.urgence === 'haute' ? '<span class="etiquette haute">Urgence haute</span>' : ''}</div>
-  ${suivi ? `<div class="tache-progression" style="margin-top:14px"><span class="barre"><i style="width:${demande.progression}%"></i></span><small>${demande.progression}%</small></div>` : ''}${audio}
+  ${estClient() ? etapesDemande(demande) : ''}
+  ${suivi ? `<div class="tache-progression" style="margin-top:14px"><span class="barre"><i style="width:${demande.progression}%"></i></span><small>${demande.progression}%</small></div>` : ''}
   <dl class="detail">${!estClient() || ETAT.clients.length > 1 ? `<dt>Client</dt><dd>${echapper(client?.nom || '—')}</dd>` : ''}<dt>Pôle</dt><dd>${echapper(pole?.nom || '—')}</dd><dt>Demandée par</dt><dd>${echapper(auteur ? nomDe(auteur) : '—')}, le ${formaterDate(formatIso(new Date(demande.cree_le)))}</dd><dt>Date souhaitée</dt><dd>${demande.echeance_souhaitee ? formaterDate(demande.echeance_souhaitee) : '—'}</dd></dl>
   <label>Description</label><p class="texte-libre">${echapper(demande.description) || 'Aucune description'}</p>`;
   if (estClient()) {
@@ -957,6 +829,393 @@ async function supprimerDemande(id) {
   notifier('Demande supprimée');
 }
 
+/* ---------- Dictée vocale ---------- */
+// Reconnaissance vocale du navigateur (Chrome, Edge, Safari) + analyse de la phrase en français.
+// Rien n'est enregistré sans validation : la phrase préremplit le formulaire habituel, que l'on vérifie puis valide.
+const ReconnaissanceVocale = window.SpeechRecognition || window.webkitSpeechRecognition;
+let reconnaissance = null, modeDictee = 'tache', erreurEcoute = '';
+const normaliser = texte => texte.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[’'`]/g, ' ');
+const echapperRegex = texte => texte.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const NOMBRES_MOTS = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10, quinze: 15 };
+const JOURS_SEMAINE = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+const MOIS_ANNEE = ['janvier', 'fevrier', 'mars', 'avril', 'mai', 'juin', 'juillet', 'aout', 'septembre', 'octobre', 'novembre', 'decembre'];
+function analyserDate(norm, maintenant = new Date()) {
+  const base = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate()),
+    plus = jours => new Date(base.getFullYear(), base.getMonth(), base.getDate() + jours),
+    debut = '(?:(?:pour|avant|d ici|jusqu a|au plus tard)\\s+)?',
+    article = '(?:(?:le|la|ce|cette|au|aux)\\s+)?';
+  const motifs = [
+    [`${debut}apres[ -]demain`, () => plus(2)],
+    [`${debut}demain`, () => plus(1)],
+    [`${debut}aujourd hui`, () => plus(0)],
+    [`${debut}dans (\\d+|${Object.keys(NOMBRES_MOTS).join('|')}) (jour|jours|semaine|semaines)`, m => plus((NOMBRES_MOTS[m[1]] || +m[1]) * (m[2].startsWith('semaine') ? 7 : 1))],
+    [`${debut}${article}fin (?:de la |de |d )?semaine`, () => plus((5 - base.getDay() + 7) % 7)],
+    [`${debut}${article}fin (?:du |de )?mois`, () => new Date(base.getFullYear(), base.getMonth() + 1, 0)],
+    [`${debut}${article}semaine prochaine`, () => plus(((1 - base.getDay() + 7) % 7 || 7) + 4)],
+    [`${debut}${article}(\\d{1,2})(?:er)?\\s+(${MOIS_ANNEE.join('|')})(?:\\s+(\\d{4}))?`, m => {
+      const jour = +m[1], mois = MOIS_ANNEE.indexOf(m[2]), annee = m[3] ? +m[3] : base.getFullYear();
+      let date = new Date(annee, mois, jour);
+      if (!m[3] && date < base) date = new Date(annee + 1, mois, jour);
+      return date.getDate() === jour ? date : null;
+    }],
+    [`${debut}${article}(${JOURS_SEMAINE.join('|')})(?: prochain)?`, m => plus((JOURS_SEMAINE.indexOf(m[1]) - base.getDay() + 7) % 7 || 7)],
+    [`${debut}le\\s+(\\d{1,2})[/-](\\d{1,2})(?:[/-](\\d{2,4}))?`, m => {
+      const jour = +m[1], mois = +m[2] - 1;
+      let annee = m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : base.getFullYear(), date = new Date(annee, mois, jour);
+      if (!m[3] && date < base) date = new Date(annee + 1, mois, jour);
+      return date.getDate() === jour && mois >= 0 && mois < 12 ? date : null;
+    }],
+    [`${debut}le\\s+(\\d{1,2})(?:er)?(?!\\d|\\s*(?:h|heures?|%|euros?))`, m => {
+      const jour = +m[1];
+      if (jour < 1 || jour > 31) return null;
+      let date = new Date(base.getFullYear(), base.getMonth(), jour);
+      if (date < base) date = new Date(base.getFullYear(), base.getMonth() + 1, jour);
+      return date.getDate() === jour ? date : null;
+    }]
+  ];
+  for (const [motif, calcul] of motifs) {
+    const m = new RegExp('\\b' + motif + '\\b').exec(norm);
+    if (!m) continue;
+    const date = calcul(m);
+    if (date) return { date: formatIso(date), debut: m.index, fin: m.index + m[0].length };
+  }
+  return null;
+}
+const DEBUT_PHRASE = /^\s*(?:bonjour|salut|ok|alors|euh|s il (?:te|vous) plait|svp|stp|je (?:voudrais|souhaite|aimerais|veux|voulais)|j aimerais|il (?:me |nous )?faut|on (?:a|aurait) besoin (?:d |de )?|nous avons besoin (?:d |de )?|j ai besoin (?:d |de )?|(?:peux|pouvez)[ -](?:tu|vous)|tu peux|vous pouvez|pourriez[ -]vous|pourrais[ -]tu|cree[rz]?|ajoute[rz]?|ouvre|ouvrir|nouvelle|nouveau|assigne[rz]?|affecte[rz]?|donne[rz]?|confie[rz]?|faire|fais|passer|passe|envoyer|envoie|une demande(?: d intervention)?(?: pour| de| concernant)?|une tache(?: pour| de| concernant)?|la tache|cette tache|demande(?: d intervention)?|tache|que|qu)\b[\s,:;.-]*/;
+const MOTS_DEBUT = new Set(['un', 'une', 'des', 'de', 'du', 'pour', 'à', 'a', 'et', 'que', 'avec', 'par']);
+const MOTS_FIN = new Set(['pour', 'à', 'a', 'de', 'du', 'des', 'et', 'avec', 'par', 'le', 'la', 'les', 'au', 'aux', 'dans', 'en', 'sur', 'avant', 'd', 'l']);
+function nettoyerTitre(titre) {
+  const bords = /^[\s,;:.!?-]+|[\s,;:.!?-]+$/g,
+    nu = mot => mot.toLowerCase().replace(/^[,;:.!?-]+|[,;:.!?-]+$/g, ''),
+    mots = [];
+  for (const mot of titre.replace(/(?:\s*[,;:]\s*){2,}/g, ', ').split(/\s+/).filter(Boolean)) {
+    if (mot === '\u0001') {
+      // un morceau retiré (date, pôle…) : on enlève aussi le petit mot de liaison resté devant
+      if (mots.length && MOTS_FIN.has(nu(mots[mots.length - 1]))) mots.pop();
+      continue;
+    }
+    mots.push(mot);
+  }
+  while (mots.length && MOTS_DEBUT.has(nu(mots[0]))) mots.shift();
+  while (mots.length && MOTS_FIN.has(nu(mots[mots.length - 1]))) mots.pop();
+  const resultat = mots.join(' ').replace(bords, '');
+  return resultat.charAt(0).toUpperCase() + resultat.slice(1);
+}
+const MOTS_VIDES = new Set('le la les un une des de du d l et ou a au aux en dans sur sous pour par avec sans que qui quoi dont ce cette ces cet mon ma mes ton ta tes son sa ses notre nos votre vos leur leurs je tu il elle on nous vous ils elles me te se pas plus tres bien tout tous toute toutes etre avoir faire fait faut veux voudrais souhaite besoin demande demander tache agence client clients groupe merci bonjour svp urgent urgence date semaine mois jour pole equipe suis est sont ete ont cela ceci comme mais donc car aussi ainsi alors deja encore chez entre vers apres avant depuis pendant selon'.split(' '));
+const motsUtiles = texte => normaliser(texte || '').split(/[^a-z0-9]+/).filter(mot => mot.length >= 3 && !MOTS_VIDES.has(mot)).map(mot => mot.replace(/[sx]$/, '').slice(0, 6));
+// Pôle dont le nom, les mots-clés et la description recoupent le mieux le texte ; rien si aucun ne se détache
+function devinerPole(texte, poles) {
+  const racines = new Set(motsUtiles(texte));
+  if (!racines.size) return null;
+  const notes = poles.map(pole => {
+    const poids = new Map(),
+      ajouter = (source, valeur) => motsUtiles(source).forEach(racine => poids.set(racine, Math.max(poids.get(racine) || 0, valeur)));
+    ajouter(pole.nom, 3);
+    ajouter(pole.mots_cles, 3);
+    ajouter(pole.description, 1);
+    let note = 0;
+    racines.forEach(racine => {
+      note += poids.get(racine) || 0;
+    });
+    return [pole, note];
+  }).sort((premier, second) => second[1] - premier[1]);
+  if (!notes.length || notes[0][1] < 1 || notes[1] && notes[1][1] === notes[0][1]) return null;
+  return notes[0][0];
+}
+// options : { mode: 'tache' | 'demande', poles, profils, liens, clients }
+function analyserParole(texte, options) {
+  const original = texte.replace(/\s+/g, ' ').trim(),
+    masque = new Array(original.length).fill(false);
+  let norm = normaliser(original);
+  if (norm.length !== original.length) norm = original.toLowerCase().replace(/[’'`]/g, ' ');
+  const marquer = (debut, fin) => {
+    for (let indice = debut; indice < fin; indice++) masque[indice] = true;
+    norm = norm.slice(0, debut) + ' '.repeat(fin - debut) + norm.slice(fin);
+  };
+  const chercher = (motif, masquer = true) => {
+    const m = motif.exec(norm);
+    if (m && masquer) marquer(m.index, m.index + m[0].length);
+    return m;
+  };
+  const retirerDebut = () => {
+    for (let tour = 0; tour < 8; tour++) {
+      const m = DEBUT_PHRASE.exec(norm);
+      if (!m || !m[0].trim()) break;
+      marquer(0, m[0].length);
+    }
+  };
+  const nomAffiche = profil => profil.nom_complet || (profil.email || '').split('@')[0];
+  retirerDebut();
+  while (chercher(/\b(?:s il (?:te|vous) plait|svp|stp|merci)\b/));
+
+  let priorite;
+  if (chercher(/\b(?:pas urgent|peu urgent|sans urgence|priorite (?:basse|faible)|basse priorite|quand (?:tu|vous|on) (?:pourras|pourrez|pourra|peut|peux|pouvez))\b/)) priorite = 'basse';
+  else if (chercher(/\b(?:priorite (?:normale|moyenne)|urgence (?:normale|moyenne))\b/)) priorite = 'normale';
+  else if (chercher(/\b(?:c est\s+)?(?:tres urgente?|urgentissime|en urgence|avec urgence|urgence (?:haute|forte|maximale)|urgente?|prioritaire|priorite (?:haute|elevee|maximale|absolue)|haute priorite|critique)\b/)) priorite = 'haute';
+
+  let date;
+  const trouvee = analyserDate(norm);
+  if (trouvee) {
+    marquer(trouvee.debut, trouvee.fin);
+    date = trouvee.date;
+  }
+
+  let pole, poleAuto = false;
+  for (const candidat of [...options.poles].sort((premier, second) => second.nom.length - premier.nom.length)) {
+    const nom = echapperRegex(normaliser(candidat.nom).trim());
+    if (!nom) continue;
+    if (chercher(new RegExp(`\\b(?:(?:dans|pour|sur|vers|aupres de|chez)\\s+)?(?:(?:le|la|l|au|du)\\s+)?pole\\s+${nom}\\b`)) ||
+      chercher(new RegExp(`\\b(?:dans|pour|vers|aupres de|chez)\\s+(?:(?:le|la|l|au|du)\\s+)?${nom}\\b`)) ||
+      chercher(new RegExp(`\\b${nom}\\b`), false)) {
+      pole = candidat;
+      break;
+    }
+  }
+
+  let assignes = [], clientId;
+  const manquants = [];
+  if (options.mode === 'tache') {
+    const personnes = options.profils.filter(profil => profil.actif && profil.role !== 'client'),
+      premierPrenom = profil => normaliser(nomAffiche(profil)).trim().split(' ')[0],
+      lien = '(?:(?:a|avec|pour|par|chez|et)\\s+)?';
+    for (const profil of [...personnes].sort((premier, second) => nomAffiche(second).length - nomAffiche(premier).length)) {
+      const complet = echapperRegex(normaliser(nomAffiche(profil)).trim()),
+        prenom = echapperRegex(premierPrenom(profil)),
+        unique = personnes.filter(autre => premierPrenom(autre) === premierPrenom(profil)).length === 1;
+      if (complet && chercher(new RegExp(`\\b${lien}${complet}\\b`)) || unique && prenom && chercher(new RegExp(`\\b${lien}${prenom}\\b`))) assignes.push(profil.id);
+    }
+    if (!pole) {
+      const decomptes = options.poles.map(candidat => [candidat, assignes.filter(id => options.liens.some(membre => membre.pole_id === candidat.id && membre.utilisateur_id === id)).length]),
+        meilleur = Math.max(0, ...decomptes.map(element => element[1])),
+        gagnants = decomptes.filter(element => element[1] === meilleur && meilleur > 0);
+      if (gagnants.length === 1) pole = gagnants[0][0];
+      else if (options.poles.length === 1) pole = options.poles[0];
+      if (!pole) {
+        pole = devinerPole(original, options.poles);
+        poleAuto = Boolean(pole);
+      }
+    }
+    if (pole) {
+      const dehors = assignes.filter(id => !options.liens.some(membre => membre.pole_id === pole.id && membre.utilisateur_id === id));
+      dehors.forEach(id => manquants.push(nomAffiche(options.profils.find(profil => profil.id === id))));
+      assignes = assignes.filter(id => !dehors.includes(id));
+    }
+  } else {
+    for (const client of [...options.clients].sort((premier, second) => second.nom.length - premier.nom.length)) {
+      const nom = echapperRegex(normaliser(client.nom).trim());
+      if (nom && chercher(new RegExp(`\\b(?:(?:de|pour|chez|du|des|au nom de|client)\\s+)*${nom}\\b`))) {
+        clientId = client.id;
+        break;
+      }
+    }
+    if (!pole) {
+      pole = devinerPole(original, options.poles);
+      poleAuto = Boolean(pole);
+    }
+    if (!pole && options.poles.length === 1) pole = options.poles[0];
+  }
+
+  retirerDebut();
+  let brut = '', dansTrou = false;
+  for (let indice = 0; indice < original.length; indice++) {
+    if (masque[indice]) {
+      if (!dansTrou) brut += ' \u0001 ';
+      dansTrou = true;
+    } else {
+      brut += original[indice];
+      dansTrou = false;
+    }
+  }
+  let titre = nettoyerTitre(brut),
+    trop = false;
+  if (!titre) titre = nettoyerTitre(original);
+  if (titre.length > 90) {
+    titre = titre.slice(0, 90).replace(/\s+\S*$/, '') + '…';
+    trop = true;
+  }
+  return { titre, description: options.mode === 'demande' || trop ? original : '', date, priorite, pole, poleAuto, assignes, manquants, clientId };
+}
+
+const boutonMicro = () => {
+  const possible = estClient() ? peutDemander() : polesGeres().length;
+  return possible ? `<button class="micro" data-action="dicter" aria-label="Dicter une demande ou une tâche" title="Dicter">${icone('micro')}</button>` : '';
+};
+function ouvrirDictee() {
+  const peutTache = !estClient() && polesGeres().length > 0,
+    peutDemande = estClient() || estAdmin() && ETAT.clients.length > 0 && polesOuverts().length > 0;
+  modeDictee = peutTache ? 'tache' : 'demande';
+  const exemple = estClient() ? '« Je voudrais une affiche pour le salon, pôle Design, avant le 20 novembre, c’est urgent. »' : '« Assigne à Marie la maquette du site, pôle Design, pour vendredi, priorité haute. »';
+  ouvrirModale(`<div class="formulaire-modale" id="dictee"><h2>Dicter</h2>
+  <p class="discret">${ReconnaissanceVocale ? 'Touchez le micro, puis parlez. ' : 'La dictée vocale n’est pas disponible sur ce navigateur : saisissez votre phrase (le clavier de votre téléphone propose aussi un micro). '}Exemple : ${exemple}</p>
+  ${peutTache && peutDemande ? '<div class="filtres" style="margin:14px 0 0"><button type="button" class="bascule actif" data-action="mode_dictee" data-mode="tache">Une tâche</button><button type="button" class="bascule" data-action="mode_dictee" data-mode="demande">Une demande client</button></div>' : ''}
+  ${ReconnaissanceVocale ? `<div class="dictee-micro"><button type="button" class="micro-grand" data-action="ecouter" aria-pressed="false" aria-label="Démarrer ou arrêter l’écoute">${icone('micro')}</button><small class="discret" id="etat-ecoute" aria-live="polite">Touchez le micro pour parler</small></div>` : ''}
+  <label for="champ-dictee">Votre phrase</label><textarea id="champ-dictee" rows="4" placeholder="Ce que vous dites s’affiche ici : vous pouvez le corriger."></textarea>
+  <div class="actions"><button type="button" class="bouton fantome" data-action="fermer">Annuler</button><button type="button" class="bouton" data-action="interpreter">Continuer</button></div></div>`);
+}
+function majEcoute(ecoute, message) {
+  const bouton = trouver('.micro-grand'),
+    etat = trouver('#etat-ecoute');
+  if (bouton) {
+    bouton.classList.toggle('ecoute', ecoute);
+    bouton.setAttribute('aria-pressed', String(ecoute));
+  }
+  if (etat && message) etat.textContent = message;
+}
+const REPETITIONS_VALIDES = new Set(['tres', 'bien', 'tout', 'si', 'nous', 'vous', 'non', 'ah']);
+// Certains navigateurs (Chrome sur Android surtout) renvoient plusieurs fois le même texte, parfois cumulé
+function fusionnerTexte(acquis, nouveau) {
+  if (!acquis) return nouveau;
+  const ancien = normaliser(acquis).trim(),
+    recent = normaliser(nouveau).trim();
+  if (!recent || ancien === recent || ancien.endsWith(recent)) return acquis;
+  if (recent.startsWith(ancien)) return nouveau;
+  return acquis + ' ' + nouveau;
+}
+function supprimerRepetitions(texte) {
+  const mots = texte.split(/\s+/).filter(Boolean),
+    forme = liste => liste.map(mot => normaliser(mot)).join(' ');
+  for (let taille = 8; taille >= 1; taille--) {
+    for (let indice = 0; indice + 2 * taille <= mots.length;) {
+      const bloc = forme(mots.slice(indice, indice + taille)),
+        suite = forme(mots.slice(indice + taille, indice + 2 * taille));
+      if (bloc === suite && (taille > 1 || !REPETITIONS_VALIDES.has(bloc) && !/\d/.test(bloc))) mots.splice(indice + taille, taille);
+      else indice++;
+    }
+  }
+  return mots.join(' ');
+}
+function ecouter() {
+  if (reconnaissance) return reconnaissance.stop();
+  const zone = trouver('#champ-dictee');
+  if (!zone || !ReconnaissanceVocale) return;
+  const base = zone.value.trim(),
+    moteur = new ReconnaissanceVocale();
+  let acquis = '',
+    apercu = '';
+  const afficherTexte = () => {
+    zone.value = supprimerRepetitions([base, acquis].filter(Boolean).join(' '));
+  };
+  moteur.lang = 'fr-FR';
+  moteur.interimResults = true;
+  moteur.continuous = false;
+  moteur.maxAlternatives = 1;
+  erreurEcoute = '';
+  moteur.onstart = () => majEcoute(true, 'Je vous écoute… touchez le micro pour arrêter');
+  // Seuls les résultats définitifs entrent dans la phrase ; le texte provisoire s'affiche sous le micro
+  moteur.onresult = evenement => {
+    apercu = '';
+    for (let indice = evenement.resultIndex || 0; indice < evenement.results.length; indice++) {
+      const resultat = evenement.results[indice],
+        texte = (resultat[0]?.transcript || '').trim();
+      if (!texte) continue;
+      if (resultat.isFinal) acquis = fusionnerTexte(acquis, texte);
+      else apercu = texte;
+    }
+    afficherTexte();
+    if (apercu) majEcoute(true, `Je vous écoute… ${apercu}`);
+  };
+  moteur.onerror = evenement => {
+    erreurEcoute = {
+      'not-allowed': 'Micro refusé : autorisez-le dans les réglages du navigateur.',
+      'service-not-allowed': 'Micro refusé : autorisez-le dans les réglages du navigateur.',
+      'no-speech': 'Je n’ai rien entendu. Touchez le micro et réessayez.',
+      'audio-capture': 'Aucun micro détecté.',
+      network: 'Reconnaissance indisponible (connexion). Saisissez votre phrase.'
+    }[evenement.error] || (evenement.error === 'aborted' ? '' : 'La reconnaissance vocale a échoué : saisissez votre phrase.');
+  };
+  moteur.onend = () => {
+    reconnaissance = null;
+    if (apercu) {
+      acquis = fusionnerTexte(acquis, apercu);
+      afficherTexte();
+    }
+    majEcoute(false, erreurEcoute || 'Touchez le micro pour continuer à parler');
+  };
+  reconnaissance = moteur;
+  try {
+    moteur.start();
+  } catch (erreur) {
+    reconnaissance = null;
+    majEcoute(false, 'Impossible de démarrer le micro : saisissez votre phrase.');
+  }
+}
+function arreterEcoute() {
+  if (!reconnaissance) return;
+  const moteur = reconnaissance;
+  reconnaissance = null;
+  moteur.onend = moteur.onerror = moteur.onresult = null;
+  try {
+    moteur.abort();
+  } catch (erreur) {}
+}
+function interpreterDictee() {
+  const texte = supprimerRepetitions((trouver('#champ-dictee')?.value || '').trim());
+  if (!texte) return notifier('Dites ou saisissez d’abord votre phrase.', 1);
+  const mode = estClient() ? 'demande' : modeDictee,
+    resultat = analyserParole(texte, mode === 'demande' ? { mode, poles: polesOuverts(), profils: [], liens: [], clients: ETAT.clients } : { mode, poles: polesGeres(), profils: ETAT.profils, liens: ETAT.liens, clients: [] });
+  fermerModale();
+  if (mode === 'demande') formulaireDemande({ client_id: resultat.clientId, pole_id: resultat.pole?.id, titre: resultat.titre, description: resultat.description, urgence: resultat.priorite, echeance_souhaitee: resultat.date });
+  else formulaireTache(undefined, undefined, { titre: resultat.titre, description: resultat.description, pole_id: resultat.pole?.id, priorite: resultat.priorite, echeance: resultat.date, assignes: resultat.assignes });
+  if (resultat.manquants.length) notifier(`${resultat.manquants.join(', ')} ne fait pas partie du pôle choisi : non assigné(e).`, 1);
+  else notifier(resultat.poleAuto ? `Pôle choisi d’après votre phrase : ${resultat.pole.nom}. Vérifiez puis validez.` : 'Vérifiez, corrigez si besoin, puis validez.');
+}
+
+/* ---------- Mise à jour de l'application ---------- */
+// Une application installée peut rester ouverte (ou en veille) pendant des jours : on repère la sortie d'une nouvelle
+// version et on propose de la charger. Signature = version.json (écrit au déploiement) ou, à défaut, empreinte du code.
+let signatureChargee = null, signatureIgnoree = null, derniereVerification = 0;
+const rechargerPage = () => location.reload();
+async function lireSignature() {
+  try {
+    const reponse = await fetch('version.json', { cache: 'no-store' });
+    if (reponse.ok) {
+      try {
+        const donnees = await reponse.json();
+        if (donnees && donnees.version) return String(donnees.version);
+      } catch (erreur) {}
+    }
+    const contenu = (await Promise.all(['app.js', 'style.css'].map(fichier => fetch(fichier, { cache: 'no-store' }).then(retour => retour.ok ? retour.text() : '')))).join('');
+    if (!contenu) return null;
+    let empreinte = 5381;
+    for (let indice = 0; indice < contenu.length; indice++) empreinte = (empreinte * 33 ^ contenu.charCodeAt(indice)) >>> 0;
+    return 'h' + empreinte.toString(36);
+  } catch (erreur) {
+    return null;
+  }
+}
+async function verifierMiseAJour() {
+  derniereVerification = Date.now();
+  const signature = await lireSignature();
+  if (!signature) return;
+  if (!signatureChargee) {
+    signatureChargee = signature;
+    return;
+  }
+  if (signature !== signatureChargee && signature !== signatureIgnoree) afficherInviteMiseAJour(signature);
+}
+function afficherInviteMiseAJour(signature) {
+  if (trouver('#invite-maj')) return;
+  document.body.insertAdjacentHTML('beforeend', `<div id="invite-maj" role="status"><div><b>Une nouvelle version est disponible</b><small>Mettez à jour pour profiter des dernières améliorations.</small></div><div class="invite-actions"><button class="bouton clair" data-action="mettre_a_jour">Mettre à jour</button><button class="invite-plus-tard" data-action="plus_tard" data-signature="${echapper(signature)}">Plus tard</button></div></div>`);
+}
+async function mettreAJour() {
+  try {
+    const inscriptions = navigator.serviceWorker ? await navigator.serviceWorker.getRegistrations() : [];
+    await Promise.all(inscriptions.map(inscription => inscription.update()));
+  } catch (erreur) {}
+  rechargerPage();
+}
+function surveillerMiseAJour() {
+  verifierMiseAJour();
+  const regarder = () => {
+    if (document.visibilityState === 'visible' && Date.now() - derniereVerification > 5 * 60 * 1000) verifierMiseAJour();
+  };
+  document.addEventListener('visibilitychange', regarder);
+  window.addEventListener('online', regarder);
+  setInterval(regarder, 30 * 60 * 1000);
+  // Un nouveau service worker prend la main alors que la page tourne encore avec l'ancien code
+  if ('serviceWorker' in navigator && navigator.serviceWorker.controller) navigator.serviceWorker.addEventListener('controllerchange', () => afficherInviteMiseAJour('sw'));
+}
+
 /* ---------- Événements ---------- */
 document.addEventListener('click', async evenement => {
   if (evenement.target === trouver('#dialogue')) return fermerModale();
@@ -977,14 +1236,6 @@ document.addEventListener('click', async evenement => {
     await bdd.auth.signOut();
   } else if (action === 'installer') {
     installer();
-  } else if (action === 'saisie-vocale') {
-    ouvrirSaisieVocale();
-  } else if (action === 'demarrer-vocal') {
-    demarrerVocal(bouton);
-  } else if (action === 'terminer-vocal') {
-    terminerVocal();
-  } else if (action === 'utiliser-vocal') {
-    utiliserDictée();
   } else if (action === 'nouvelle_tache') formulaireTache(undefined, bouton.dataset.date);else if (action === 'tache') formulaireTache(id);else if (action === 'miennes') {
     ETAT.filtres.miennes = !ETAT.filtres.miennes;
     afficher();
@@ -1009,6 +1260,23 @@ document.addEventListener('click', async evenement => {
     };
     ETAT.jour = !decalage || nouvelleDate.getFullYear() === maintenant.getFullYear() && nouvelleDate.getMonth() === maintenant.getMonth() ? aujourdhui() : formatIso(nouvelleDate);
     afficher();
+  } else if (action === 'mettre_a_jour') {
+    mettreAJour();
+  } else if (action === 'plus_tard') {
+    signatureIgnoree = bouton.dataset.signature;
+    trouver('#invite-maj')?.remove();
+  } else if (action === 'filtre_client') {
+    ETAT.filtreClient = bouton.dataset.valeur;
+    afficher();
+  } else if (action === 'dicter') {
+    ouvrirDictee();
+  } else if (action === 'ecouter') {
+    ecouter();
+  } else if (action === 'interpreter') {
+    interpreterDictee();
+  } else if (action === 'mode_dictee') {
+    modeDictee = bouton.dataset.mode;
+    bouton.parentElement.querySelectorAll('.bascule').forEach(element => element.classList.toggle('actif', element === bouton));
   } else if (action === 'nouvelle_demande') {
     formulaireDemande();
   } else if (action === 'demande') {
@@ -1067,7 +1335,8 @@ document.addEventListener('submit', async evenement => {
       options: {
         data: {
           nom_complet: donnees.nom_complet,
-          type_compte: donnees.type_compte === 'client' ? 'client' : 'membre'
+          type_compte: donnees.type_compte === 'client' ? 'client' : 'membre',
+          groupe_id: donnees.type_compte === 'client' && /^[0-9a-f-]{36}$/i.test(donnees.groupe_id || '') ? donnees.groupe_id : null
         }
       }
     }) : await bdd.auth.signInWithPassword({
@@ -1081,8 +1350,26 @@ document.addEventListener('submit', async evenement => {
     }
   }
 });
+function appliquerPoleDemande(idPole) {
+  const pole = poleDe(idPole),
+    zone = trouver('#champ-description-demande');
+  if (zone.value.trim() === '' || zone.value === zone.dataset.modele) zone.value = pole?.modele_demande || '';
+  zone.dataset.modele = pole?.modele_demande || '';
+  trouver('#aide-pole').textContent = pole?.description || '';
+}
 document.addEventListener('input', evenement => {
-  if (evenement.target.id === 'champ-progression') trouver('#valeur-progression').textContent = evenement.target.value;
+  const cible = evenement.target;
+  if (cible.id === 'champ-progression') trouver('#valeur-progression').textContent = cible.value;
+  if (cible.id === 'champ-titre-demande' || cible.id === 'champ-description-demande') {
+    const choix = trouver('#champ-pole-demande');
+    if (!choix || choix.dataset.manuel === '1') return;
+    const pole = devinerPole(`${cible.form.elements.titre.value} ${cible.form.elements.description.value}`, polesOuverts());
+    if (pole && pole.id !== choix.value) {
+      choix.value = pole.id;
+      appliquerPoleDemande(pole.id);
+      trouver('#suggestion-pole').textContent = `Pôle choisi automatiquement : ${pole.nom}. Vous pouvez le changer.`;
+    }
+  }
 });
 document.addEventListener('change', async evenement => {
   const cible = evenement.target,
@@ -1090,12 +1377,18 @@ document.addEventListener('change', async evenement => {
   if (attributs.filtre) {
     ETAT.filtres[attributs.filtre] = cible.value;
     afficher();
+  } else if (cible.id === 'champ-type-compte') {
+    const bloc = trouver('#bloc-groupe');
+    if (bloc) {
+      bloc.hidden = cible.value !== 'client';
+      trouver('#champ-groupe').required = cible.value === 'client';
+    }
   } else if (cible.id === 'champ-pole-demande') {
-    const pole = poleDe(cible.value),
-      zone = trouver('#champ-description-demande');
-    if (zone.value.trim() === '' || zone.value === zone.dataset.modele) zone.value = pole?.modele_demande || '';
-    zone.dataset.modele = pole?.modele_demande || '';
-    trouver('#aide-pole').textContent = pole?.description || '';
+    if (evenement.isTrusted) {
+      cible.dataset.manuel = '1';
+      trouver('#suggestion-pole').textContent = '';
+    }
+    appliquerPoleDemande(cible.value);
   } else if (cible.id === 'champ-pole') trouver('#champ-assignes').innerHTML = casesAssignation(cible.value, [...trouver('#champ-assignes').querySelectorAll('input:checked')].map(coche => coche.value).filter(idUtilisateur => ETAT.liens.some(lien => lien.pole_id === cible.value && lien.utilisateur_id === idUtilisateur)));else if (cible.id === 'champ-statut' && cible.value === 'terminee') {
     trouver('#champ-progression').value = 100;
     trouver('#valeur-progression').textContent = 100;
@@ -1172,6 +1465,9 @@ document.addEventListener('drop', evenement => {
   idGlisse = null;
   deplacerTache(id, colonne.dataset.statut);
 });
+document.addEventListener('close', evenement => {
+  if (evenement.target.id === 'dialogue') arreterEcoute();
+}, true);
 document.addEventListener('keydown', evenement => {
   if (evenement.key === 'Enter' && evenement.target.id === 'champ-nouvelle-sous-tache') {
     evenement.preventDefault();
@@ -1190,4 +1486,5 @@ window.addEventListener('appinstalled', () => {
 });
 new MutationObserver(majInstallation).observe(trouver('#application'), { childList: true });
 if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+surveillerMiseAJour();
 initialiser();
