@@ -80,7 +80,6 @@ const boutonInstaller = (classes = 'bouton fantome', libelle = 'Installer l’ap
 const majInstallation = () => document.querySelectorAll('.cta-installer').forEach(bouton => {
   bouton.hidden = !installationPossible();
 });
-const preferencesNotifications = () => 'notifications_email' in ETAT.moi ? `<label class="preference"><input type="checkbox" data-notif ${ETAT.moi.notifications_email ? 'checked' : ''}>Recevoir les notifications de tâches par e-mail</label>` : '';
 async function installer() {
   if (invitationInstallation) {
     const invitation = invitationInstallation;
@@ -327,7 +326,7 @@ const vues = {
       <section class="panneau"><h2>Avancement par pôle</h2>${ETAT.poles.length ? ETAT.poles.map(pole => {
       const taches = ETAT.taches.filter(tache => tache.pole_id === pole.id);
       return `<div class="ligne" style="--couleur:${pole.couleur}"><span class="pastille"></span><div class="extensible"><b>${echapper(pole.nom)}</b><div class="barre" style="margin-top:6px"><i style="width:${moyenne(taches)}%"></i></div></div><small>${taches.length} tâche${taches.length > 1 ? 's' : ''} · ${moyenne(taches)}%</small></div>`;
-    }).join('') : '<div class="vide">Aucun pôle pour l’instant.</div>'}</section></div>${preferencesNotifications()}`;
+    }).join('') : '<div class="vide">Aucun pôle pour l’instant.</div>'}</section></div>`;
   },
   taches() {
     const filtres = ETAT.filtres;
@@ -1394,13 +1393,6 @@ document.addEventListener('change', async evenement => {
     trouver('#valeur-progression').textContent = 100;
   } else if (cible.matches('.sous-tache input[type=checkbox]')) {
     recalculerProgression();
-  } else if (attributs.notif !== undefined) {
-    const {
-      error
-    } = await bdd.from('profils').update({ notifications_email: cible.checked }).eq('id', ETAT.moi.id);
-    notifier(error ? error.message : cible.checked ? 'Notifications e-mail activées' : 'Notifications e-mail désactivées', Boolean(error));
-    await chargerTout();
-    afficher();
   } else if (attributs.role || attributs.actif) {
     const {
       error
